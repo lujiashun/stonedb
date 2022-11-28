@@ -89,7 +89,6 @@ bool LoadParser::MakeRow(std::vector<ValueCache> &value_buffers) {
 
   bool cont = true;
   while (cont) {
-    bool make_value_ok;
     switch (strategy_->GetOneRow(cur_ptr_, buf_end_ - cur_ptr_, value_buffers, rowsize, errorinfo)) {
       case ParsingStrategy::ParseResult::EOB:
         if (mysql_bin_log.is_open())
@@ -113,28 +112,41 @@ bool LoadParser::MakeRow(std::vector<ValueCache> &value_buffers) {
         break;
 
       case ParsingStrategy::ParseResult::OK:
-        make_value_ok = true;
+      {
+        bool make_value_ok{true};
         for (uint att = 0; make_value_ok && att < attrs_.size(); ++att)
+          //bad row just be consumed and be ignored
           if (!MakeValue(att, value_buffers[att])) {
             rejecter_.ConsumeBadRow(cur_ptr_, rowsize, cur_row_ + 1, att + 1);
             make_value_ok = false;
           }
+
         cur_ptr_ += rowsize;
         cur_row_++;
-        if (make_value_ok) {
-          for (uint att = 0; att < attrs_.size(); ++att) value_buffers[att].Commit();
-          // check key
-          num_of_row_++;
-          if (tab_index_ != nullptr) {
-            if (HA_ERR_FOUND_DUPP_KEY == ProcessInsertIndex(tab_index_, value_buffers, num_of_row_ - 1)) {
-              num_of_row_--;
-              num_of_dup_++;
-              for (uint att = 0; att < attrs_.size(); ++att) value_buffers[att].Rollback();
-            }
-          }
-          return true;
+
+        if (!make_value_ok)
+          break;
+
+        for (uint att = 0; att < attrs_.size(); ++att) value_buffers[att].Commit();
+
+        num_of_row_++;
+  
+        if(num_of_skip_ < io_param_.GetSkipLines() ) /*check skip lines */
+        {
+          num_of_skip_++;
+          num_of_row_--;
+          for (uint att = 0; att < attrs_.size(); ++att) value_buffers[att].Rollback();
         }
-        break;
+        else if (tab_index_ != nullptr) { /* check duplicate */
+          if (HA_ERR_FOUND_DUPP_KEY == ProcessInsertIndex(tab_index_, value_buffers, num_of_row_ - 1)) {
+            num_of_row_--;
+            num_of_dup_++;
+            for (uint att = 0; att < attrs_.size(); ++att) value_buffers[att].Rollback();
+          }
+        }
+
+        return true;
+      }
     }
   }
 

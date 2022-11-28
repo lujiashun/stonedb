@@ -1,0 +1,25 @@
+--source include/have_tianmu.inc
+
+use test;
+--echo #
+--echo # Test of skip lines syntax
+--echo #
+CREATE TABLE `tmp_loaddata` (
+`id` int(11) NOT NULL,
+`name` varchar(100) DEFAULT NULL,
+PRIMARY KEY (`id`)
+) ENGINE=tianmu;
+
+
+LOAD DATA INFILE '/data/1.txt' Into TABLE tmp_loaddata FIELDS TERMINATED BY ',' ignore 1 lines;
+select * from tmp_loaddata;
+truncate table tmp_loaddata;
+LOAD DATA INFILE '/data/1.txt' Into TABLE tmp_loaddata FIELDS TERMINATED BY ',' ignore 2 lines;
+select * from tmp_loaddata;
+truncate table tmp_loaddata;
+LOAD DATA INFILE '/data/1.txt' Into TABLE tmp_loaddata FIELDS TERMINATED BY ',' ignore 3 lines;
+select * from tmp_loaddata;
+truncate table tmp_loaddata;
+LOAD DATA INFILE '/data/1.txt' Into TABLE tmp_loaddata FIELDS TERMINATED BY ',' ignore 4 lines;
+select * from tmp_loaddata;
+

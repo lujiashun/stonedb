@@ -1864,7 +1864,7 @@ common::TianmuError Engine::GetIOP(std::unique_ptr<system::IOParameters> &io_par
                             (int)(thd.variables.collation_database->number));  // default charset
 
   if (ex.skip_lines != 0) {
-    unsupported_syntax = true;
+    //unsupported_syntax = true;
     io_params->SetParameter(system::Parameter::SKIP_LINES, (int64_t)ex.skip_lines);
   }
 

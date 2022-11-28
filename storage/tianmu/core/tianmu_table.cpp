@@ -768,11 +768,12 @@ uint64_t TianmuTable::ProceedNormal(system::IOParameters &iop) {
   uint to_prepare;
   uint no_of_rows_returned;
   utils::Timer timer;
+
   do {
     to_prepare = share->PackSize() - (m_attrs[0]->NumOfObj() % share->PackSize());
     std::vector<loader::ValueCache> value_buffers;
     no_of_rows_returned = parser.GetPackrow(to_prepare, value_buffers);
-    no_dup_rows += parser.GetDuprow();
+    no_dup_rows += parser.GetDupRow();
     if (parser.GetNoRow() > 0) {
       utils::result_set<void> res;
       for (uint att = 0; att < m_attrs.size(); ++att) {
@@ -798,7 +799,7 @@ uint64_t TianmuTable::ProceedNormal(system::IOParameters &iop) {
     throw common::FormatException("Rejected rows threshold exceeded. " + std::to_string(no_rejected_rows) + " out of " +
                                   std::to_string(no_loaded_rows + no_rejected_rows) + " rows rejected.");
 
-  if (no_loaded_rows == 0 && no_rejected_rows == 0 && parser.GetDuprow() == 0)
+  if (no_loaded_rows == 0 && no_rejected_rows == 0 && parser.GetDupRow() == 0 && parser.GetIgnoreRow() == 0)
     throw common::FormatException(-1, -1);
 
   return no_loaded_rows;

@@ -142,7 +142,9 @@ class IOParameters {
   char EscapeCharacter() const { return escape_character_; }
   std::string TableName() const { return table_name_; }
   std::string LineStarter() const { return line_starter_; }
-  int64_t TableID() const { return skip_lines_; }
+  //int64_t TableID() const { return skip_lines_; }
+  int64_t TableID() const { return tabl_id_; } //TODO
+  int64_t GetSkipLines() const { return skip_lines_;}
   int CharsetInfoNumber() const { return charset_info_number_; }
   int LocalLoad() const { return local_load_; }
   int OptionallyEnclosed() { return opt_enclosed_; }
@@ -178,6 +180,7 @@ class IOParameters {
   std::string charsets_dir_;
   int charset_info_number_;
   int64_t skip_lines_;
+  int64_t tabl_id_{0};
   int64_t value_list_elements_;
   int local_load_;
   int lock_option_;
