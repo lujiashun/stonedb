@@ -19,7 +19,7 @@
 
 #include <limits>
 #include <vector>
-
+#include <map>
 #include "core/tools.h"
 #include "core/transaction.h"
 #include "loader/value_cache.h"
@@ -42,6 +42,7 @@ static inline void PrepareKMP(ParsingStrategy::kmp_next_t &kmp_next, std::string
 
 ParsingStrategy::ParsingStrategy(const system::IOParameters &iop, std::vector<uchar> columns_collations)
     : attr_infos_(iop.ATIs()),
+      thd_(iop.GetTHD()),
       prepared_(false),
       terminator_(iop.LineTerminator()),
       delimiter_(iop.Delimiter()),
@@ -269,6 +270,7 @@ void ParsingStrategy::GetEOL(const char *const buf, const char *const buf_end) {
 ParsingStrategy::ParseResult ParsingStrategy::GetOneRow(const char *const buf, size_t size,
                                                         std::vector<ValueCache> &record, uint &rowsize,
                                                         int &errorinfo) {
+
   const char *buf_end = buf + size;
   if (!prepared_) {
     GetEOL(buf, buf_end);
@@ -281,7 +283,27 @@ ParsingStrategy::ParseResult ParsingStrategy::GetOneRow(const char *const buf, s
   const char *ptr = buf;
   bool row_incomplete = false;
   errorinfo = -1;
-  for (uint col = 0; col < attr_infos_.size() - 1; ++col) {
+ 
+  List<Item> & fields_vars = thd_->lex->load_field_list;
+  List<Item> & fields = thd_->lex->load_update_list;
+  List<Item> & values= thd_->lex->load_value_list;
+  //GetAttrTypeInfo AttributeTypeInfo ->GetFieldName
+
+
+  sql_exchange *ex = thd_->lex->exchange;
+  const CHARSET_INFO * char_info = ex->cs ? ex->cs : thd_->variables.collation_database;
+  std::map<std::string,Field*> map_str_field;
+  std::map<std::string,std::pair<const char*, size_t>>map_ptr_field;
+
+  List_iterator_fast<Item> it(fields_vars);
+  Item *item{nullptr};
+  Item * real_item{nullptr};
+  uint index{0};
+  while ((item = it++)) {
+    index++;
+    real_item= item->real_item();
+
+    if(index == fields_vars.elements) break;
     const char *val_beg = ptr;
     if (string_qualifier_ && *ptr == string_qualifier_) {
       row_incomplete = !SearchUnescapedPattern(++ptr, buf_end, enclose_delimiter_, kmp_next_enclose_delimiter_);
@@ -289,28 +311,44 @@ ParsingStrategy::ParseResult ParsingStrategy::GetOneRow(const char *const buf, s
     } else {
       SearchResult res = SearchUnescapedPatternNoEOL(ptr, buf_end, delimiter_, kmp_next_delimiter_);
       if (res == SearchResult::END_OF_LINE) {
-        GetValue(val_beg, ptr - val_beg, col, record[col]);
+        if (real_item->type() == Item::FIELD_ITEM){
+          Field *field= ((Item_field *)real_item)->field;
+          field->set_notnull();
+          field->store((char*) val_beg, ptr - val_beg, char_info);
+          std::string str_field(field->field_name);
+          map_str_field[str_field] = field;
+          map_ptr_field[str_field] = std::make_pair(val_beg,ptr - val_beg);
+        }
+        else if(item->type() == Item::STRING_ITEM){
+          ((Item_user_var_as_out_param *)item)->set_value((char*) val_beg, ptr - val_beg, char_info);
+        }
         continue;
       }
       row_incomplete = (res == SearchResult::END_OF_BUFFER);
     }
-
+ 
     if (row_incomplete) {
-      errorinfo = col;
+      errorinfo = index;
       break;
     }
-
-    try {
-      GetValue(val_beg, ptr - val_beg, col, record[col]);
-    } catch (...) {
-      if (errorinfo == -1)
-        errorinfo = col;
+    if (real_item->type() == Item::FIELD_ITEM){
+      Field *field= ((Item_field *)real_item)->field;
+      field->set_notnull();
+      field->store((char*) val_beg, ptr - val_beg, char_info);
+      std::string str_field(field->field_name);
+      map_str_field[str_field] = field;
+      map_ptr_field[str_field] = std::make_pair(val_beg,ptr - val_beg);
     }
+    else if(item->type() == Item::STRING_ITEM){
+      ((Item_user_var_as_out_param *)item)->set_value((char*) val_beg, ptr - val_beg, char_info);
+    }
+    
     ptr += delimiter_.size();
   }
 
   if (!row_incomplete) {
     // the last column
+    index++;
     const char *val_beg = ptr;
     if (string_qualifier_ && *ptr == string_qualifier_) {
       row_incomplete = !SearchUnescapedPattern(++ptr, buf_end, enclose_terminator_, kmp_next_enclose_terminator_);
@@ -319,22 +357,78 @@ ParsingStrategy::ParseResult ParsingStrategy::GetOneRow(const char *const buf, s
       row_incomplete = !SearchUnescapedPattern(ptr, buf_end, terminator_, kmp_next_terminator_);
 
     if (!row_incomplete) {
-      try {
-        GetValue(val_beg, ptr - val_beg, attr_infos_.size() - 1, record[attr_infos_.size() - 1]);
-      } catch (...) {
-        if (errorinfo == -1)
-          errorinfo = attr_infos_.size() - 1;
+      if (real_item->type() == Item::FIELD_ITEM) {
+        Field *field= ((Item_field *)real_item)->field;
+        field->set_notnull();
+        field->store((char*) val_beg, ptr - val_beg, char_info);
+        std::string str_field(field->field_name);
+        map_str_field[str_field] = field;
+        map_ptr_field[str_field] = std::make_pair(val_beg,ptr - val_beg);
       }
-      ptr += terminator_.size();
+      else if (item->type() == Item::STRING_ITEM) {
+        ((Item_user_var_as_out_param *)item)->set_value((char*) val_beg, ptr - val_beg,char_info);
+      }
+    }
+
+    ptr += terminator_.size();
+  }
+
+  Item *fld{nullptr};
+  List_iterator_fast<Item> f(fields), v(values);
+  std::vector<String*> vec_Str;
+  while ((fld= f++)) {
+    Item_field *const field= fld->field_for_view_update();
+    DEBUG_ASSERT(field != NULL);
+    Field *const rfield= field->field;
+    
+    std::string str_field(field->field_name);
+    map_str_field[str_field] = rfield;
+
+    Item *const value= v++;
+    /* Generated columns will be filled after all base columns are done. */
+    //if (rfield->is_gcol())
+    //  continue;
+
+    //TODO
+    if (value->save_in_field(rfield, false) < 0) {
+      DEBUG_ASSERT(0);
+    }
+    char buff[MAX_FIELD_WIDTH]={0};
+    String tmp(buff,MAX_FIELD_WIDTH,&my_charset_bin),*res{nullptr};
+    res = field->str_result(&tmp);
+
+    if (res) {
+      String* str = new (thd_->mem_root) String();
+      str->copy(*res);
+      map_ptr_field[str_field] =std::make_pair(str->ptr(), str->length());
+      vec_Str.push_back(str);
     }
   }
 
+  for (uint col = 0; col < attr_infos_.size(); ++col) {
+    core::AttributeTypeInfo &ati = GetATI(col);
+    std::string field_name = ati.GetFieldName();
+    if(map_str_field.count(field_name))
+    {
+      auto field = map_str_field[field_name];
+      DEBUG_ASSERT(field != nullptr);
+      auto ptr_field = map_ptr_field[field_name];
+      GetValue(ptr_field.first,ptr_field.second,col,record[col]);
+    }
+    else {
+      DEBUG_ASSERT(0);
+    }
+  }
+
+  for(auto str:vec_Str)  delete str;
+
   if (row_incomplete) {
     if (errorinfo == -1)
-      errorinfo = attr_infos_.size() - 1;
+      errorinfo = index;
     return ParsingStrategy::ParseResult::EOB;
   }
   rowsize = uint(ptr - buf);
+
   return errorinfo == -1 ? ParseResult::OK : ParseResult::ERROR;
 }
 

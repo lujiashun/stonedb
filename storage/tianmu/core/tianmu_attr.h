@@ -377,7 +377,7 @@ class TianmuAttr final : public mm::TraceableObject, public PhysicalColumn, publ
   common::PACK_INDEX row2pack(size_t row) const { return row >> pss; }
   int row2offset(size_t row) const { return row % (1L << pss); }
   const fs::path &Path() const { return m_share->m_path; }
-
+  std::string GetFieldName() const { return m_share->GetFieldName();}
  private:
   COL_VER_HDR hdr{};
   common::TX_ID m_version;  // the read-from version

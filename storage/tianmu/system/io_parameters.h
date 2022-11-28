@@ -156,13 +156,14 @@ class IOParameters {
   std::string GetRejectFile() const { return (reject_file_); }
   int64_t GetAbortOnCount() const { return (abort_on_count_); }
   double GetAbortOnThreshold() const { return (abort_on_threshold_); }
-  void SetATIs(const std::vector<core::AttributeTypeInfo> &attr_type_info_) { this->attr_type_info_ = attr_type_info_; }
+  void SetATIs(const std::vector<core::AttributeTypeInfo> &attr_type_info) { this->attr_type_info_ = attr_type_info; }
   const std::vector<core::AttributeTypeInfo> &ATIs() const { return attr_type_info_; }
   bool LoadDelayed() const { return load_delayed_insert_; }
   std::string GetTableName() const { return table_name_; }
   void SetLogInfo(void *logptr) { loginfo_ptr_ = logptr; }
   void *GetLogInfo() const { return loginfo_ptr_; }
-
+  void SetTHD(THD *thd) { thd_ = thd;}
+  THD * GetTHD() const { return thd_;}
  public:
   bool load_delayed_insert_ = false;
 
@@ -184,6 +185,7 @@ class IOParameters {
   int64_t value_list_elements_;
   int local_load_;
   int lock_option_;
+  THD *thd_{nullptr};
 
   // TimeZone
   short sign_;

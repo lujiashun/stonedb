@@ -1517,6 +1517,8 @@ common::TianmuError Engine::RunLoader(THD *thd, sql_exchange *ex, TABLE_LIST *ta
 
     auto tab = current_txn_->GetTableByPath(table_path);
 
+    bitmap_set_all(table->read_set);//not good to put this code here,just for temp.
+
     tab->LoadDataInfile(*iop);
 
     if (current_txn_->Killed()) {
@@ -1766,6 +1768,7 @@ common::TianmuError Engine::GetIOP(std::unique_ptr<system::IOParameters> &io_par
   short sign, minutes;
   ComputeTimeZoneDiffInMinutes(&thd, sign, minutes);
   io_params->SetTimeZone(sign, minutes);
+  io_params->SetTHD(&thd);
 
   if (ex.filetype == FILETYPE_MEM) {
     io_params->load_delayed_insert_ = true;
