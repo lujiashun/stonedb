@@ -1769,7 +1769,7 @@ common::TianmuError Engine::GetIOP(std::unique_ptr<system::IOParameters> &io_par
   ComputeTimeZoneDiffInMinutes(&thd, sign, minutes);
   io_params->SetTimeZone(sign, minutes);
   io_params->SetTHD(&thd);
-
+  io_params->SetTable(table);
   if (ex.filetype == FILETYPE_MEM) {
     io_params->load_delayed_insert_ = true;
   }

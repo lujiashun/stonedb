@@ -43,6 +43,7 @@ static inline void PrepareKMP(ParsingStrategy::kmp_next_t &kmp_next, std::string
 ParsingStrategy::ParsingStrategy(const system::IOParameters &iop, std::vector<uchar> columns_collations)
     : attr_infos_(iop.ATIs()),
       thd_(iop.GetTHD()),
+      table_(iop.GetTable()),
       prepared_(false),
       terminator_(iop.LineTerminator()),
       delimiter_(iop.Delimiter()),
@@ -280,6 +281,33 @@ ParsingStrategy::ParseResult ParsingStrategy::GetOneRow(const char *const buf, s
   if (buf == buf_end)
     return ParsingStrategy::ParseResult::EOB;
 
+  std::map<std::string,std::pair<const char*, size_t>>map_ptr_field;
+  std::map<std::string,Field*> map_str_field;
+  //default values;
+  uint n_fields = table_->s->fields;
+  uint i = 0;
+  std::vector<String*> vec_Str;
+
+  for (i = 0; i < n_fields; i++) {
+      table_->field[i]->set_default();
+      Field * field = table_->field[i];
+
+      std::string str_field(field->field_name);
+      map_str_field[str_field] = field;
+      char buff[MAX_FIELD_WIDTH]={0};
+      String tmp(buff,MAX_FIELD_WIDTH,&my_charset_bin),*res{nullptr};
+      res = field->val_str(&tmp);
+
+      if (res) {
+        String* str = new (thd_->mem_root) String();
+        str->copy(*res);
+        map_ptr_field[str_field] =std::make_pair(str->ptr(), str->length());
+        vec_Str.push_back(str);
+      } else {
+         DEBUG_ASSERT(0);
+      }
+  }
+
   const char *ptr = buf;
   bool row_incomplete = false;
   errorinfo = -1;
@@ -292,13 +320,12 @@ ParsingStrategy::ParseResult ParsingStrategy::GetOneRow(const char *const buf, s
 
   sql_exchange *ex = thd_->lex->exchange;
   const CHARSET_INFO * char_info = ex->cs ? ex->cs : thd_->variables.collation_database;
-  std::map<std::string,Field*> map_str_field;
-  std::map<std::string,std::pair<const char*, size_t>>map_ptr_field;
 
   List_iterator_fast<Item> it(fields_vars);
   Item *item{nullptr};
   Item * real_item{nullptr};
   uint index{0};
+    
   while ((item = it++)) {
     index++;
     real_item= item->real_item();
@@ -375,7 +402,6 @@ ParsingStrategy::ParseResult ParsingStrategy::GetOneRow(const char *const buf, s
 
   Item *fld{nullptr};
   List_iterator_fast<Item> f(fields), v(values);
-  std::vector<String*> vec_Str;
   while ((fld= f++)) {
     Item_field *const field= fld->field_for_view_update();
     DEBUG_ASSERT(field != NULL);
@@ -416,6 +442,10 @@ ParsingStrategy::ParseResult ParsingStrategy::GetOneRow(const char *const buf, s
       GetValue(ptr_field.first,ptr_field.second,col,record[col]);
     }
     else {
+      //set_default
+      if(ati.AutoInc())
+      {
+      }
       DEBUG_ASSERT(0);
     }
   }

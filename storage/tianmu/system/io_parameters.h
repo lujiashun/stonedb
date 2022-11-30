@@ -76,7 +76,8 @@ class IOParameters {
         break;
     }
   }
-
+  void SetTable(TABLE *table){ table_ = table;};
+  TABLE* GetTable() const { return table_;}
   void SetParameter(Parameter param, const std::string &value) {
     switch (param) {
       case Parameter::LINE_STARTER:
@@ -201,7 +202,7 @@ class IOParameters {
   std::string install_path_;
 
   void *loginfo_ptr_;
-
+  TABLE *table_{nullptr};
  private:
   void Init() {
     output_path_[0] = '\0';

@@ -43,6 +43,7 @@ class ParsingStrategy final {
  private:
   std::vector<core::AttributeTypeInfo> attr_infos_;
   THD * thd_{nullptr};
+  TABLE * table_{nullptr};
   bool prepared_;
 
   std::string terminator_;
