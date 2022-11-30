@@ -294,6 +294,8 @@ ParsingStrategy::ParseResult ParsingStrategy::GetOneRow(const char *const buf, s
 
       std::string str_field(field->field_name);
       map_str_field[str_field] = field;
+      table_->field[i]->set_default();
+
       char buff[MAX_FIELD_WIDTH]={0};
       String tmp(buff,MAX_FIELD_WIDTH,&my_charset_bin),*res{nullptr};
       res = field->val_str(&tmp);
@@ -316,7 +318,6 @@ ParsingStrategy::ParseResult ParsingStrategy::GetOneRow(const char *const buf, s
   List<Item> & fields = thd_->lex->load_update_list;
   List<Item> & values= thd_->lex->load_value_list;
   //GetAttrTypeInfo AttributeTypeInfo ->GetFieldName
-
 
   sql_exchange *ex = thd_->lex->exchange;
   const CHARSET_INFO * char_info = ex->cs ? ex->cs : thd_->variables.collation_database;
@@ -434,20 +435,25 @@ ParsingStrategy::ParseResult ParsingStrategy::GetOneRow(const char *const buf, s
   for (uint col = 0; col < attr_infos_.size(); ++col) {
     core::AttributeTypeInfo &ati = GetATI(col);
     std::string field_name = ati.GetFieldName();
-    if(map_str_field.count(field_name))
+    if(0 == map_str_field.count(field_name))
     {
-      auto field = map_str_field[field_name];
-      DEBUG_ASSERT(field != nullptr);
-      auto ptr_field = map_ptr_field[field_name];
-      GetValue(ptr_field.first,ptr_field.second,col,record[col]);
-    }
-    else {
-      //set_default
-      if(ati.AutoInc())
-      {
-      }
       DEBUG_ASSERT(0);
     }
+
+    #if 0
+    // check auto increment
+    if(ati.AutoInc())
+    {
+      table_->file->update_auto_increment()
+      continue;
+    }
+    #endif
+  
+    auto field = map_str_field[field_name];
+    DEBUG_ASSERT(field != nullptr);
+    auto ptr_field = map_ptr_field[field_name];
+    GetValue(ptr_field.first,ptr_field.second,col,record[col]);
+
   }
 
   for(auto str:vec_Str)  delete str;

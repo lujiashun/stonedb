@@ -4924,6 +4924,7 @@ public:
   const char *file_name;
   bool dumpfile;
   ulong skip_lines;
+  int tab_id;
   const CHARSET_INFO *cs;
   sql_exchange(const char *name, bool dumpfile_flag,
                enum_filetype filetype_arg= FILETYPE_CSV);

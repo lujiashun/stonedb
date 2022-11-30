@@ -162,6 +162,21 @@ bool LoadParser::MakeValue(uint att, ValueCache &buffer) {
     }
   }
 
+  //deal with auto increment
+  auto &attr(attrs_[att]);
+  if(core::ATI::IsIntegerType(attrs_[att]->TypeName()) && attr->GetIfAutoInc()) {
+    int64_t *buf = reinterpret_cast<int64_t *>(buffer.Prepare(sizeof(int64_t)));
+    int64_t value = *(int64_t *)buf;
+
+    if (value == 0)  // Value of auto inc column was not assigned by user
+      *buf = attr->AutoIncNext();
+    
+    if (value > attr->GetAutoInc())
+      attr->SetAutoInc(value);
+
+    buffer.ExpectedSize(sizeof(int64_t));
+  }
+  
   // validate the value length
   if (core::ATI::IsStringType(attrs_[att]->TypeName()) && !buffer.ExpectedNull() &&
       (size_t)buffer.ExpectedSize() > attrs_[att]->Type().GetPrecision())

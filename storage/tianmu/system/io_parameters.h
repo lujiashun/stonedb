@@ -40,7 +40,8 @@ enum class Parameter {
   LOCAL_LOAD,
   VALUE_LIST_ELEMENTS,
   LOCK_OPTION,
-  OPTIONALLY_ENCLOSED
+  OPTIONALLY_ENCLOSED,
+  TABLE_ID
 };
 
 class IOParameters {
@@ -103,6 +104,9 @@ class IOParameters {
       case Parameter::VALUE_LIST_ELEMENTS:
         value_list_elements_ = value;
         break;
+      case Parameter::TABLE_ID:
+        table_id_ = value;
+        break;
       default:
         DEBUG_ASSERT(0 && "unexpected value");
         break;
@@ -144,7 +148,7 @@ class IOParameters {
   std::string TableName() const { return table_name_; }
   std::string LineStarter() const { return line_starter_; }
   //int64_t TableID() const { return skip_lines_; }
-  int64_t TableID() const { return tabl_id_; } //TODO
+  int64_t TableID() const { return table_id_; } //TODO
   int64_t GetSkipLines() const { return skip_lines_;}
   int CharsetInfoNumber() const { return charset_info_number_; }
   int LocalLoad() const { return local_load_; }
@@ -182,7 +186,7 @@ class IOParameters {
   std::string charsets_dir_;
   int charset_info_number_;
   int64_t skip_lines_;
-  int64_t tabl_id_{0};
+  int64_t table_id_{0};
   int64_t value_list_elements_;
   int local_load_;
   int lock_option_;
