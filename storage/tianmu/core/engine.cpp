@@ -1888,7 +1888,7 @@ common::TianmuError Engine::GetIOP(std::unique_ptr<system::IOParameters> &io_par
   }
 
   if (value_list_elements != 0) {
-    unsupported_syntax = true;
+    //unsupported_syntax = true;
     io_params->SetParameter(system::Parameter::VALUE_LIST_ELEMENTS, (int64_t)value_list_elements);
   }
 

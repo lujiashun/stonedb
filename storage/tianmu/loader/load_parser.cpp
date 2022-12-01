@@ -127,7 +127,9 @@ bool LoadParser::MakeRow(std::vector<ValueCache> &value_buffers) {
         if (!make_value_ok)
           break;
 
-        for (uint att = 0; att < attrs_.size(); ++att) value_buffers[att].Commit();
+        for (uint att = 0; att < attrs_.size(); ++att) {
+            value_buffers[att].Commit();
+        }
 
         num_of_row_++;
   
@@ -135,13 +137,23 @@ bool LoadParser::MakeRow(std::vector<ValueCache> &value_buffers) {
         {
           num_of_skip_++;
           num_of_row_--;
-          for (uint att = 0; att < attrs_.size(); ++att) value_buffers[att].Rollback();
+          for (uint att = 0; att < attrs_.size(); ++att)  {
+            value_buffers[att].Rollback();
+
+            auto &attr(attrs_[att]);
+            attr->RollBackIfAutoInc();
+          }
         }
         else if (tab_index_ != nullptr) { /* check duplicate */
           if (HA_ERR_FOUND_DUPP_KEY == ProcessInsertIndex(tab_index_, value_buffers, num_of_row_ - 1)) {
             num_of_row_--;
             num_of_dup_++;
-            for (uint att = 0; att < attrs_.size(); ++att) value_buffers[att].Rollback();
+            for (uint att = 0; att < attrs_.size(); ++att) {
+              value_buffers[att].Rollback();
+
+              auto &attr(attrs_[att]);
+              attr->RollBackIfAutoInc();
+            }
           }
         }
 
@@ -165,8 +177,8 @@ bool LoadParser::MakeValue(uint att, ValueCache &buffer) {
   //deal with auto increment
   auto &attr(attrs_[att]);
   if(core::ATI::IsIntegerType(attrs_[att]->TypeName()) && attr->GetIfAutoInc()) {
-    int64_t *buf = reinterpret_cast<int64_t *>(buffer.Prepare(sizeof(int64_t)));
-    int64_t value = *(int64_t *)buf;
+    uint64_t *buf = reinterpret_cast<uint64_t *>(buffer.Prepare(sizeof(uint64_t)));
+    uint64_t value = *(uint64_t *)buf;
 
     if (value == 0)  // Value of auto inc column was not assigned by user
       *buf = attr->AutoIncNext();
@@ -174,7 +186,7 @@ bool LoadParser::MakeValue(uint att, ValueCache &buffer) {
     if (value > attr->GetAutoInc())
       attr->SetAutoInc(value);
 
-    buffer.ExpectedSize(sizeof(int64_t));
+    buffer.ExpectedSize(sizeof(uint64_t));
   }
   
   // validate the value length
