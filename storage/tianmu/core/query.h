@@ -18,16 +18,16 @@
 #define TIANMU_CORE_QUERY_H_
 #pragma once
 
-#include "core/column_type.h"
 #include "core/item_tianmu_field.h"
-#include "core/joiner.h"
 #include "core/mysql_expression.h"
-#include "handler/ha_my_tianmu.h"
+#include "optimizer/joiner.h"
+#include "sql/ha_my_tianmu.h"
+#include "vc/column_type.h"
 
 namespace Tianmu {
 namespace core {
 
-using Tianmu::handler::QueryRouteTo;
+using Tianmu::DBHandler::QueryRouteTo;
 
 class CompiledQuery;
 class MysqlExpression;
@@ -74,7 +74,7 @@ class Query final {
   TempTable *Preexecute(CompiledQuery &qu, ResultSender *sender, bool display_now = true);
   QueryRouteTo BuildConditions(Item *conds, CondID &cond_id, CompiledQuery *cq, const TabID &tmp_table,
                                CondType filter_type, bool is_zero_result = false,
-                               JoinType join_type = JoinType::JO_INNER);
+                               JoinType join_type = JoinType::JO_INNER, bool can_cond_push = false);
 
   std::multimap<std::string, std::pair<int, TABLE *>> table_alias2index_ptr;
 
@@ -138,7 +138,7 @@ class Query final {
 
   QueryRouteTo Item2CQTerm(Item *an_arg, CQTerm &term, const TabID &tmp_table, CondType filter_type,
                            bool negative = false, Item *left_expr_for_subselect = nullptr,
-                           common::Operator *oper_for_subselect = nullptr);
+                           common::Operator *oper_for_subselect = nullptr, const TabID &base_table = TabID());
 
   // int FilterNotSubselect(Item *conds, const TabID& tmp_table, FilterType
   // filter_type, FilterID *and_me_filter = 0);
@@ -151,11 +151,13 @@ class Query final {
    * \return filter number (non-negative) or error indication (negative)
    */
   CondID ConditionNumberFromNaked(Item *conds, const TabID &tmp_table, CondType filter_type, CondID *and_me_filter,
-                                  bool is_or_subtree = false);
+                                  bool is_or_subtree = false, bool can_cond_push = false);
   CondID ConditionNumberFromMultipleEquality(Item_equal *conds, const TabID &tmp_table, CondType filter_type,
-                                             CondID *and_me_filter = 0, bool is_or_subtree = false);
+                                             CondID *and_me_filter = 0, bool is_or_subtree = false,
+                                             bool can_cond_push = false);
   CondID ConditionNumberFromComparison(Item *conds, const TabID &tmp_table, CondType filter_type,
-                                       CondID *and_me_filter = 0, bool is_or_subtree = false, bool negative = false);
+                                       CondID *and_me_filter = 0, bool is_or_subtree = false, bool negative = false,
+                                       bool can_cond_push = false);
 
   /*! \brief Checks type of operator involved in condition
    * \param conds - conditions
@@ -179,7 +181,7 @@ class Query final {
   static void MarkWithAll(common::Operator &op);
 
   CondID ConditionNumber(Item *conds, const TabID &tmp_table, CondType filter_type, CondID *and_me_filter = 0,
-                         bool is_or_subtree = false);
+                         bool is_or_subtree = false, bool can_cond_push = false);
   QueryRouteTo BuildCondsIfPossible(Item *conds, CondID &cond_id, const TabID &tmp_table, JoinType join_type);
 
  public:
@@ -252,8 +254,9 @@ class Query final {
    * \param group_by - indicates if it is column for group by query
    * \return column number
    */
-  int AddColumnForPhysColumn(Item *item, const TabID &tmp_table, const common::ColOperation oper, const bool distinct,
-                             bool group_by, const char *alias = nullptr);
+  int AddColumnForPhysColumn(Item *item, const TabID &tmp_table, const TabID &base_table,
+                             const common::ColOperation oper, const bool distinct, bool group_by,
+                             const char *alias = nullptr);
 
   /*! \brief Creates AddColumn step in compilation by creating, if does not exist, Virtual Column based on expression
    * \param mysql_expression - pointer to expression
@@ -319,19 +322,22 @@ class Query final {
    * \param ignore_minmax - indicates if field of typy Min/Max should be transformed to LISTING
    * \return returns RETURN_QUERY_TO_MYSQL_ROUTE in case of any problem and RCBASE_QUERY_ROUTE otherwise
    */
-  QueryRouteTo AddFields(List<Item> &fields, const TabID &tmp_table, const bool group_by_clause,
-                         int &num_of_added_fields, bool ignore_minmax, bool &aggr_used);
+  QueryRouteTo AddFields(List<Item> &fields, const TabID &tmp_table, TabID const &base_table,
+                         const bool group_by_clause, int &num_of_added_fields, bool ignore_minmax, bool &aggr_used);
+
+  QueryRouteTo AddSemiJoinFiled(List<Item> &fields, List<TABLE_LIST> &join, const TabID &tmp_table);
 
   /*! \brief Generates AddColumn compilation steps for every field on GROUP BY list
    * \param fields - pointer to GROUP BY fields
    * \param tmp_table - alias of TempTable for which AddColumn steps are added
    * \return returns RETURN_QUERY_TO_MYSQL_ROUTE in case of any problem and RCBASE_QUERY_ROUTE otherwise
    */
-  QueryRouteTo AddGroupByFields(ORDER *group_by, const TabID &tmp_table);
+  QueryRouteTo AddGroupByFields(ORDER *group_by, const TabID &tmp_table, const TabID &base_table);
 
   //! is this item representing a column local to the temp table (not a parameter)
   bool IsLocalColumn(Item *item, const TabID &tmp_table);
-  QueryRouteTo AddOrderByFields(ORDER *order_by, TabID const &tmp_table, int const group_by_clause);
+  QueryRouteTo AddOrderByFields(ORDER *order_by, TabID const &tmp_table, TabID const &base_table,
+                                int const group_by_clause);
   QueryRouteTo AddGlobalOrderByFields(SQL_I_List<ORDER> *global_order, const TabID &tmp_table, int max_col);
 
   /*! \brief AddJoins for every field on SELECT join list

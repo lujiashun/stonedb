@@ -17,11 +17,11 @@
 
 #include "core/transaction.h"
 
-#include "core/dpn.h"
 #include "core/tianmu_table.h"
-#include "core/tools.h"
+#include "data/dpn.h"
 #include "system/file_system.h"
 #include "util/fs.h"
+#include "util/tools.h"
 
 namespace Tianmu {
 // current transaction, thread local var.
@@ -79,7 +79,7 @@ void Transaction::AddTableWRIfNeeded(std::shared_ptr<TableShare> &share) {
 }
 
 void Transaction::Commit([[maybe_unused]] THD *thd) {
-  TIANMU_LOG(LogCtl_Level::INFO, "txn commit, modified tables size in txn: [%lu].", modified_tables_.size());
+  //  TIANMU_LOG(LogCtl_Level::DEBUG, "txn commit, modified tables size in txn: [%lu].", modified_tables_.size());
   for (auto const &iter : modified_tables_) iter.second->CommitVersion();
 
   modified_tables_.clear();

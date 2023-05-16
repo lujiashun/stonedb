@@ -118,7 +118,7 @@
 #include "rpl_group_replication.h"
 #include <algorithm>
 
-#include "../storage/tianmu/handler/ha_my_tianmu.h" // tianmu code
+#include "../storage/tianmu/sql/ha_my_tianmu.h" // tianmu code
 using std::max;
 
 /**
@@ -2774,24 +2774,15 @@ mysql_execute_command(THD *thd, bool first_level)
   if (!thd->in_sub_stmt)
     thd->query_plan.set_query_plan(lex->sql_command, lex,
                                    !thd->stmt_arena->is_conventional());
-  /*
-    When stonedb is used as a slave library, 
-    the default engine is tianmu, or the (sql_mode) of (MANDATORY_TIANMU) is set,
-    the engine will be forcibly converted to the tianmu engine.
-    Priority:
-    sql_mode ='MANDATORY_TIANMU' > default_storage_engine
-  */
-  if(thd->slave_thread && 
-    ((lex->sql_command == SQLCOM_CREATE_TABLE) || 
-    (lex->sql_command == SQLCOM_ALTER_TABLE)) &&
+                                   
+  if(lex && ((lex->sql_command == SQLCOM_CREATE_TABLE) || 
+    (lex->sql_command == SQLCOM_ALTER_TABLE)) && 
     !(lex->create_info.options & HA_LEX_CREATE_TMP_TABLE)){
 
-    legacy_db_type default_db_type = plugin_data<handlerton*>(global_system_variables.table_plugin)->db_type;
-    if(lex->create_info.db_type &&
-        (lex->create_info.db_type->db_type != DB_TYPE_TIANMU) &&
-        ((global_system_variables.sql_mode & MODE_MANDATORY_TIANMU) || 
-        (default_db_type == DB_TYPE_TIANMU))){
+    my_bool tianmu_mandatory = thd->slave_thread ? global_system_variables.tianmu_mandatory : thd->variables.tianmu_mandatory;
 
+    if(tianmu_mandatory){
+      lex->create_info.db_type = ha_default_handlerton(thd);
       old_db_type = lex->create_info.db_type->db_type;
       lex->create_info.db_type->db_type = DB_TYPE_TIANMU;
       lex->create_info.used_fields |= HA_CREATE_USED_ENGINE;
@@ -3286,10 +3277,10 @@ case SQLCOM_PREPARE:
           //res= handle_query(thd, lex, result, SELECT_NO_UNLOCK, 0);
 		  // Tianmu hook added
 		  
-		  int tianmu_res, free_join_from_tianmu, optimize_after_tianmu;
-		  if (Tianmu::handler::QueryRouteTo::kToMySQL ==
-			  Tianmu::handler::ha_my_tianmu_query(thd, lex, result, 0, tianmu_res, optimize_after_tianmu, free_join_from_tianmu, (int)true))
-		    res = handle_query(thd, lex, result, SELECT_NO_UNLOCK, (ulong)0, optimize_after_tianmu, free_join_from_tianmu);
+		  int tianmu_res, free_join_from_tianmu, is_optimize_after_tianmu;
+		  if (Tianmu::DBHandler::QueryRouteTo::kToMySQL ==
+			  Tianmu::DBHandler::ha_my_tianmu_query(thd, lex, result, 0, tianmu_res, is_optimize_after_tianmu, free_join_from_tianmu, (int)true))
+		    res = handle_query(thd, lex, result, SELECT_NO_UNLOCK, (ulong)0, is_optimize_after_tianmu, free_join_from_tianmu);
 		  else
 		    res = tianmu_res;
 		  
@@ -3753,7 +3744,7 @@ end_with_restore_list:
     if ((check_table_access(thd, SELECT_ACL, all_tables, FALSE, UINT_MAX, FALSE)
          || open_and_lock_tables(thd, all_tables, 0)))
       goto error;
-	if (!Tianmu::handler::ha_my_tianmu_set_statement_allowed(thd, lex)) {
+	if (!Tianmu::DBHandler::ha_my_tianmu_set_statement_allowed(thd, lex)) {
 		goto error;
 	}
     if (!(res= sql_set_variables(thd, lex_var_list)))
@@ -4995,11 +4986,7 @@ error:
   res= TRUE;
 
 finish:
-  if(thd->slave_thread && 
-    ((lex->sql_command == SQLCOM_CREATE_TABLE) || 
-    (lex->sql_command == SQLCOM_ALTER_TABLE)) &&
-    !(lex->create_info.options & HA_LEX_CREATE_TMP_TABLE) &&
-    (old_db_type != DB_TYPE_DEFAULT)){
+  if(old_db_type != DB_TYPE_DEFAULT){
       //If the engine is replaced, restore it at the end
       lex->create_info.db_type->db_type = old_db_type;
     }
@@ -5212,10 +5199,10 @@ static bool execute_sqlcom_select(THD *thd, TABLE_LIST *all_tables)
       }
       //res= handle_query(thd, lex, result, 0, 0, 0, 0);
 	 
-	  int tianmu_res, free_join_from_tianmu, optimize_after_tianmu;
-	  if (Tianmu::handler::QueryRouteTo::kToMySQL ==
-		  Tianmu::handler::ha_my_tianmu_query(thd, lex, result, (ulong)0, tianmu_res, optimize_after_tianmu, free_join_from_tianmu)) {
-		  res = handle_query(thd, lex, result, (ulonglong)0, (ulonglong)0, optimize_after_tianmu, free_join_from_tianmu);
+	  int tianmu_res, free_join_from_tianmu, is_optimize_after_tianmu;
+	  if (Tianmu::DBHandler::QueryRouteTo::kToMySQL ==
+		  Tianmu::DBHandler::ha_my_tianmu_query(thd, lex, result, (ulong)0, tianmu_res, is_optimize_after_tianmu, free_join_from_tianmu)) {
+		  res = handle_query(thd, lex, result, (ulonglong)0, (ulonglong)0, is_optimize_after_tianmu, free_join_from_tianmu);
 	  }
 	  else
 		  res = tianmu_res;

@@ -38,6 +38,8 @@ constexpr size_t operator""_GB(unsigned long long v) { return 1024u * 1024u * 10
 namespace common {
 
 extern void PushWarning(THD *thd, Sql_condition::enum_severity_level level, uint code, const char *msg);
+extern void PushWarningIfOutOfRange(THD *thd, std::string col_name, int64_t v, int type, bool unsigned_flag);
+std::string getErrMsg(std::string col_name, int64_t min, int64_t max, bool unsigned_flag, int64_t v);
 
 // Column Type
 // NOTE: do not change the order of implemented data types! Stored as int(...)
@@ -70,6 +72,7 @@ enum class ColumnType : unsigned char {
   MEDIUMINT,
   BIGINT,
   LONGTEXT,
+  BIT,
   UNK = 255
 };
 
@@ -132,19 +135,27 @@ constexpr uint32_t NULL_VALUE_U = 0xFFFFFFFC;
 constexpr int64_t MAX_ROW_NUMBER = 0x00007FFFFFFFFFFFULL;  // 2^47 - 1
 
 constexpr int64_t TIANMU_BIGINT_MAX = PLUS_INF_64;
-constexpr int64_t TIANMU_BIGINT_MIN = NULL_VALUE_64;
+constexpr int64_t TIANMU_BIGINT_MIN = NULL_VALUE_64 + 1;
+constexpr uint64_t TIANMU_BIGINT_UNSIGNED_MAX = 0xFFFFFFFFFFFFFFFFULL;  // 2^64 - 1
 
 constexpr int32_t TIANMU_MAX_INDEX_COL_LEN_LARGE = 3072;
 constexpr int32_t TIANMU_MAX_INDEX_COL_LEN_SMALL = 767;
 
+constexpr uint32_t TIANMU_BIT_MAX_PREC = 63;  // in the future we'll expand to 64.
+
 #define NULL_VALUE_D (*(double *)("\x01\x00\x00\x00\x00\x00\x00\x80"))
+#define TIANMU_INT_MAX (2147483647)
 #define TIANMU_INT_MIN (-2147483647)
+#define TIANMU_INT_UNSIGNED_MAX (0xFFFFFFFFULL)
 #define TIANMU_MEDIUMINT_MAX ((1 << 23) - 1)
 #define TIANMU_MEDIUMINT_MIN (-((1 << 23)))
+#define TIANMU_MEDIUMINT_UNSIGNED_MAX ((1 << 24) - 1)
 #define TIANMU_TINYINT_MAX 127
 #define TIANMU_TINYINT_MIN (-128)
+#define TIANMU_TINYINT_UNSIGNED_MAX 255
 #define TIANMU_SMALLINT_MAX ((1 << 15) - 1)
 #define TIANMU_SMALLINT_MIN (-(1 << 15))
+#define TIANMU_SMALLINT_UNSIGNED_MAX ((1 << 16) - 1)
 
 #define PACK_INVALID 0
 #define FIELD_MAXLENGTH 65535
@@ -153,9 +164,9 @@ constexpr int32_t TIANMU_MAX_INDEX_COL_LEN_SMALL = 767;
 
 #define ZERO_LENGTH_STRING ""
 #define DEFAULT_DELIMITER ";"
-#define DEFAULT_LINE_TERMINATOR ""
+#define DEFAULT_LINE_TERMINATOR "\n"
 
-enum class RSValue : char {
+enum class RoughSetValue : char {
   RS_NONE = 0,    // the pack is empty
   RS_SOME = 1,    // the pack is suspected (but may be empty or full) (i.e.
                   // RSValue::RS_SOME & RSValue::RS_ALL = RSValue::RS_SOME)
@@ -244,6 +255,8 @@ enum class ColOperation {
   BIT_XOR,
   GROUP_CONCAT
 };
+
+enum class ExtraOperation { EX_DO_NOTHING, EX_COND_PUSH, EX_UNKNOWN };
 
 // pack data format, stored on disk so only append new ones at the end.
 enum class PackFmt : char { DEFAULT, PPM1, PPM2, RANGECODE, LZ4, LOOKUP, NOCOMPRESS, TRIE, ZLIB };

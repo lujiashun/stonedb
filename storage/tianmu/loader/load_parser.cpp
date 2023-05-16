@@ -19,11 +19,11 @@
 
 #include "binlog.h"
 #include "core/engine.h"
-#include "core/tianmu_attr.h"
 #include "loader/value_cache.h"
 #include "log_event.h"
 #include "system/io_parameters.h"
 #include "util/timer.h"
+#include "vc/tianmu_attr.h"
 
 namespace Tianmu {
 namespace loader {
@@ -51,7 +51,11 @@ LoadParser::LoadParser(TianmuAttrPtrVect_t &attrs, const system::IOParameters &i
   buf_end_ = cur_ptr_ + read_buffer_.BufSize();
 
   timer.Print(__PRETTY_FUNCTION__);
-  tab_index_ = ha_tianmu_engine_->GetTableIndex("./" + io_param_.TableName());
+
+  core::Engine *eng = reinterpret_cast<core::Engine *>(tianmu_hton->data);
+  assert(eng);
+
+  tab_index_ = eng->GetTableIndex("./" + io_param_.TableName());
 }
 
 uint LoadParser::GetPackrow(uint no_of_rows, std::vector<ValueCache> &value_buffers) {
@@ -88,9 +92,10 @@ bool LoadParser::MakeRow(std::vector<ValueCache> &value_buffers) {
   int errorinfo;
 
   bool cont = true;
+  bool eof = false;
+
   while (cont) {
-    bool make_value_ok;
-    switch (strategy_->GetOneRow(cur_ptr_, buf_end_ - cur_ptr_, value_buffers, rowsize, errorinfo)) {
+    switch (strategy_->GetOneRow(cur_ptr_, buf_end_ - cur_ptr_, value_buffers, rowsize, errorinfo, eof)) {
       case ParsingStrategy::ParseResult::EOB:
         if (mysql_bin_log.is_open())
           binlog_loaded_block(read_buffer_.Buf(), cur_ptr_);
@@ -99,10 +104,15 @@ bool LoadParser::MakeRow(std::vector<ValueCache> &value_buffers) {
           buf_end_ = cur_ptr_ + read_buffer_.BufSize();
         } else {
           // reaching the end of the buffer
-          if (cur_ptr_ != buf_end_)
-            rejecter_.ConsumeBadRow(cur_ptr_, buf_end_ - cur_ptr_, cur_row_ + 1, errorinfo == -1 ? -1 : errorinfo + 1);
-          cur_row_++;
-          cont = false;
+          if (cur_ptr_ != buf_end_) {
+            // rejecter_.ConsumeBadRow(cur_ptr_, buf_end_ - cur_ptr_, cur_row_ + 1, errorinfo == -1 ? -1 : errorinfo +
+            // 1);
+            // do not cousume the row, take this as the normal line
+            eof = true;
+          } else {
+            cur_row_++;
+            cont = false;
+          }
         }
         break;
 
@@ -110,31 +120,58 @@ bool LoadParser::MakeRow(std::vector<ValueCache> &value_buffers) {
         rejecter_.ConsumeBadRow(cur_ptr_, rowsize, cur_row_ + 1, errorinfo + 1);
         cur_ptr_ += rowsize;
         cur_row_++;
+        cont = false;
         break;
 
-      case ParsingStrategy::ParseResult::OK:
-        make_value_ok = true;
+      case ParsingStrategy::ParseResult::OK: {
+        bool make_value_ok{true};
         for (uint att = 0; make_value_ok && att < attrs_.size(); ++att)
           if (!MakeValue(att, value_buffers[att])) {
             rejecter_.ConsumeBadRow(cur_ptr_, rowsize, cur_row_ + 1, att + 1);
             make_value_ok = false;
           }
+
         cur_ptr_ += rowsize;
         cur_row_++;
-        if (make_value_ok) {
-          for (uint att = 0; att < attrs_.size(); ++att) value_buffers[att].Commit();
-          // check key
-          num_of_row_++;
-          if (tab_index_ != nullptr) {
-            if (HA_ERR_FOUND_DUPP_KEY == ProcessInsertIndex(tab_index_, value_buffers, num_of_row_ - 1)) {
-              num_of_row_--;
-              num_of_dup_++;
-              for (uint att = 0; att < attrs_.size(); ++att) value_buffers[att].Rollback();
-            }
-          }
-          return true;
+
+        if (!make_value_ok)
+          break;
+
+        for (uint att = 0; att < attrs_.size(); ++att) {
+          value_buffers[att].Commit();
         }
-        break;
+
+        num_of_row_++;
+        io_param_.GetTHD()->get_stmt_da()->inc_current_row_for_condition();
+        if (num_of_skip_ < io_param_.GetSkipLines()) /*check skip lines */
+        {
+          // does not load this line,continue to get next line
+          num_of_skip_++;
+          num_of_row_--;
+          for (uint att = 0; att < attrs_.size(); ++att) {
+            value_buffers[att].Rollback();
+
+            auto &attr(attrs_[att]);
+            attr->RollBackIfAutoInc();
+          }
+          break;
+        } else if (tab_index_ != nullptr) { /* check duplicate */
+          if (HA_ERR_FOUND_DUPP_KEY == ProcessInsertIndex(tab_index_, value_buffers, num_of_row_ - 1)) {
+            // dose not load this line, continue to get next line
+            num_of_row_--;
+            num_of_dup_++;
+            for (uint att = 0; att < attrs_.size(); ++att) {
+              value_buffers[att].Rollback();
+
+              auto &attr(attrs_[att]);
+              attr->RollBackIfAutoInc();
+            }
+            break;
+          }
+        }
+
+        return true;
+      }
     }
   }
 
@@ -150,12 +187,27 @@ bool LoadParser::MakeValue(uint att, ValueCache &buffer) {
     }
   }
 
+  // deal with auto increment
+  auto &attr(attrs_[att]);
+  if (core::ATI::IsIntegerType(attrs_[att]->TypeName()) && attr->GetIfAutoInc()) {
+    int64_t *buf = reinterpret_cast<int64_t *>(buffer.Prepare(sizeof(uint64_t)));
+
+    if (*buf == 0)  // Value of auto inc column was not assigned by user
+      *buf = attr->AutoIncNext();
+
+    if (static_cast<uint64_t>(*buf) > attr->GetAutoInc()) {
+      if (*buf > 0 || ((attr->TypeName() == common::ColumnType::BIGINT) && attr->GetIfUnsigned()))
+        attr->SetAutoInc(*buf);
+    }
+    buffer.ExpectedSize(sizeof(uint64_t));
+  }
+
   // validate the value length
   if (core::ATI::IsStringType(attrs_[att]->TypeName()) && !buffer.ExpectedNull() &&
       (size_t)buffer.ExpectedSize() > attrs_[att]->Type().GetPrecision())
     return false;
 
-  if (attrs_[att]->Type().IsLookup() && !buffer.ExpectedNull()) {
+  if (attrs_[att]->Type().Lookup() && !buffer.ExpectedNull()) {
     types::BString s(ZERO_LENGTH_STRING, 0);
     buffer.Prepare(sizeof(int64_t));
     s.val_ = static_cast<char *>(buffer.PreparedBuffer());
@@ -169,7 +221,7 @@ bool LoadParser::MakeValue(uint att, ValueCache &buffer) {
 
 int LoadParser::ProcessInsertIndex(std::shared_ptr<index::TianmuTableIndex> tab, std::vector<ValueCache> &vcs,
                                    uint no_rows) {
-  std::vector<std::string_view> fields;
+  std::vector<std::string> fields;
   size_t lastrow = vcs[0].NumOfValues();
   ASSERT(lastrow >= 1, "should be 'lastrow >= 1'");
   std::vector<uint> cols = tab->KeyCols();

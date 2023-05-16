@@ -19,8 +19,8 @@
 #pragma once
 
 #include "common/data_format.h"
-#include "core/tianmu_attr_typeinfo.h"
 #include "loader/value_cache.h"
+#include "vc/tianmu_attr_typeinfo.h"
 
 namespace Tianmu {
 namespace loader {
@@ -34,13 +34,20 @@ class ParsingStrategy final {
   ParsingStrategy(const system::IOParameters &iop, std::vector<uchar> columns_collations);
   ~ParsingStrategy() {}
   ParseResult GetOneRow(const char *const buf, size_t size, std::vector<ValueCache> &values, uint &rowsize,
-                        int &errorinfo);
+                        int &errorinfo, bool eof = false);
+  void ReadField(const char *&ptr, const char *&val_beg, Item *&item, uint &index_of_field,
+                 std::vector<std::pair<const char *, size_t>> &vec_ptr_field, uint &field_index_in_field_list,
+                 const CHARSET_INFO *char_info, bool completed_row = true);
+  void SetTHD(THD *thd) { thd_ = thd; }
+  THD *GetTHD() const { return thd_; };
 
  protected:
   core::AttributeTypeInfo &GetATI(ushort col) { return attr_infos_[col]; }
 
  private:
   std::vector<core::AttributeTypeInfo> attr_infos_;
+  THD *thd_{nullptr};
+  TABLE *table_{nullptr};
   bool prepared_;
 
   std::string terminator_;
@@ -60,6 +67,11 @@ class ParsingStrategy final {
   CHARSET_INFO *charset_info_;
   std::vector<char> temp_buf_;
 
+  bool first_row_prepared_{false};
+  std::vector<String *> vec_field_Str_list_;  // table column index<---> String*, string will be delete by THD
+  std::vector<uint> vec_field_num_to_index_;  // calculate the order number of the assignment fields and set fields
+  std::map<std::string, uint> map_field_name_to_index_;  // field name to the table column index;
+
   void GuessUnescapedEOL(const char *ptr, const char *buf_end);
   void GuessUnescapedEOLWithEnclose(const char *ptr, const char *const buf_end);
 
@@ -67,7 +79,7 @@ class ParsingStrategy final {
                               const std::vector<int> &kmp_next);
   enum class SearchResult { PATTERN_FOUND, END_OF_BUFFER, END_OF_LINE };
   SearchResult SearchUnescapedPatternNoEOL(const char *&ptr, const char *const buf_end, const std::string &pattern,
-                                           const std::vector<int> &kmp_next);
+                                           const std::string &line_termination, const std::vector<int> &kmp_next);
 
   void GetEOL(const char *const buf, const char *const buf_end);
   void GetValue(const char *const value_ptr, size_t value_size, ushort col, ValueCache &value);

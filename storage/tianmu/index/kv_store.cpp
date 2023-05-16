@@ -18,6 +18,7 @@
 #include "index/kv_store.h"
 
 #include "core/engine.h"
+#include "executor/merge_operator.h"
 
 namespace Tianmu {
 namespace index {
@@ -43,25 +44,31 @@ void KVStore::Init() {
   // set the DBOptions's params.
   auto rocksdb_datadir = kv_data_dir_ / ".index";
   int max_compact_threads = std::thread::hardware_concurrency() / 4;
+
   max_compact_threads = (max_compact_threads > 1) ? max_compact_threads : 1;
   db_option.max_background_compactions = max_compact_threads;
   db_option.max_subcompactions = max_compact_threads;
   db_option.env->SetBackgroundThreads(max_compact_threads, rocksdb::Env::Priority::LOW);
   db_option.statistics = rocksdb::CreateDBStatistics();
   rocksdb::Status status = rocksdb::DB::ListColumnFamilies(db_option, rocksdb_datadir, &cf_names);
+
   if (!status.ok() &&
       ((status.subcode() == rocksdb::Status::kNone) || (status.subcode() == rocksdb::Status::kPathNotFound))) {
     TIANMU_LOG(LogCtl_Level::INFO, "First init rocksdb, create default cloum family");
     cf_names.push_back(DEFAULT_CF_NAME);
   }
 
+  // Only delta store cf need merge operator
+  rocksdb::ColumnFamilyOptions delta_cf_option(options);
+  delta_cf_option.merge_operator = std::make_shared<core::RecordMergeOperator>();
+
   // Disable compactions to prevent compaction start before compaction filter is ready.
-  rocksdb::ColumnFamilyOptions rs_cf_option(options);
   rocksdb::ColumnFamilyOptions index_cf_option(options);
   index_cf_option.disable_auto_compactions = true;
   index_cf_option.compaction_filter_factory.reset(new IndexCompactFilterFactory);
+
   for (auto &cfn : cf_names) {
-    IsRowStoreCF(cfn) ? cf_descr.emplace_back(cfn, rs_cf_option) : cf_descr.emplace_back(cfn, index_cf_option);
+    IsDeltaStoreCF(cfn) ? cf_descr.emplace_back(cfn, delta_cf_option) : cf_descr.emplace_back(cfn, index_cf_option);
   }
 
   // open db, get column family handles
@@ -226,7 +233,7 @@ common::ErrorCode KVStore::KVRenameTableMeta(const std::string &s_name, const st
   return dict_manager_.commit(batch) ? common::ErrorCode::SUCCESS : common::ErrorCode::FAILED;
 }
 
-common::ErrorCode KVStore::KVWriteMemTableMeta(std::shared_ptr<core::TianmuMemTable> tb_mem) {
+common::ErrorCode KVStore::KVWriteDeltaMeta(std::shared_ptr<core::DeltaTable> delta) {
   const std::unique_ptr<rocksdb::WriteBatch> wb = dict_manager_.begin();
   rocksdb::WriteBatch *const batch = wb.get();
 
@@ -234,7 +241,7 @@ common::ErrorCode KVStore::KVWriteMemTableMeta(std::shared_ptr<core::TianmuMemTa
   std::shared_ptr<void> defer(nullptr, [this](...) { dict_manager_.unlock(); });
 
   // put the tb_mem into mem cache and stores into dict data.
-  ddl_manager_.put_mem(tb_mem, batch);
+  ddl_manager_.put_delta(delta, batch);
   if (!dict_manager_.commit(batch)) {
     TIANMU_LOG(LogCtl_Level::ERROR, "Commit memory table metadata fail!");
     return common::ErrorCode::FAILED;
@@ -243,9 +250,9 @@ common::ErrorCode KVStore::KVWriteMemTableMeta(std::shared_ptr<core::TianmuMemTa
   return common::ErrorCode::SUCCESS;
 }
 
-common::ErrorCode KVStore::KVDelMemTableMeta(std::string table_name) {
-  std::shared_ptr<core::TianmuMemTable> tb_mem = ddl_manager_.find_mem(table_name);
-  if (!tb_mem)
+common::ErrorCode KVStore::KVDelDeltaMeta(std::string table_name) {
+  std::shared_ptr<core::DeltaTable> delta_table = ddl_manager_.find_delta(table_name);
+  if (!delta_table)
     return common::ErrorCode::FAILED;
 
   const std::unique_ptr<rocksdb::WriteBatch> wb = dict_manager_.begin();
@@ -257,13 +264,13 @@ common::ErrorCode KVStore::KVDelMemTableMeta(std::string table_name) {
   std::vector<GlobalId> dropped_index_ids;
   GlobalId gid;
   // gets column family id.
-  gid.cf_id = tb_mem->GetCFHandle()->GetID();
+  gid.cf_id = delta_table->GetCFHandle()->GetID();
   // gets index id.
-  gid.index_id = tb_mem->GetMemID();
+  gid.index_id = delta_table->GetDeltaTableID();
   dropped_index_ids.push_back(gid);
   dict_manager_.add_drop_index(dropped_index_ids, batch);
   // removes from mem cache and dict data.
-  ddl_manager_.remove_mem(tb_mem, batch);
+  ddl_manager_.remove_delta(delta_table, batch);
   if (!dict_manager_.commit(batch))
     return common::ErrorCode::FAILED;
 
@@ -273,14 +280,14 @@ common::ErrorCode KVStore::KVDelMemTableMeta(std::string table_name) {
   return common::ErrorCode::SUCCESS;
 }
 
-common::ErrorCode KVStore::KVRenameMemTableMeta(std::string s_name, std::string d_name) {
+common::ErrorCode KVStore::KVRenameDeltaMeta(std::string s_name, std::string d_name) {
   const std::unique_ptr<rocksdb::WriteBatch> wb = dict_manager_.begin();
   rocksdb::WriteBatch *const batch = wb.get();
 
   dict_manager_.lock();
   std::shared_ptr<void> defer(nullptr, [this](...) { dict_manager_.unlock(); });
   // rename the memtable.
-  if (!ddl_manager_.rename_mem(s_name, d_name, batch)) {
+  if (!ddl_manager_.rename_delta(s_name, d_name, batch)) {
     TIANMU_LOG(LogCtl_Level::ERROR, "rename table %s failed", s_name.c_str());
     return common::ErrorCode::FAILED;
   }
@@ -301,7 +308,7 @@ bool KVStore::KVDeleteKey(rocksdb::WriteOptions &wopts, rocksdb::ColumnFamilyHan
 }
 
 bool KVStore::KVWriteBatch(rocksdb::WriteOptions &wopts, rocksdb::WriteBatch *batch) {
-  const rocksdb::Status s = txn_db_->GetBaseDB()->Write(wopts, batch);
+  const rocksdb::Status s = txn_db_->Write(wopts, batch);
   if (!s.ok()) {
     TIANMU_LOG(LogCtl_Level::ERROR, "Rdb write batch fail: %s", s.ToString().c_str());
     return false;
@@ -322,7 +329,7 @@ std::string KVStore::generate_cf_name(uint index, TABLE *table) {
 void KVStore::create_rdbkey(TABLE *table, uint pos, std::shared_ptr<RdbKey> &new_key_def,
                             rocksdb::ColumnFamilyHandle *cf_handle) {
   // assign a new id for this index.
-  uint index_id = ha_kvstore_->GetNextIndexId();
+  uint index_id = GetNextIndexId();
 
   std::vector<ColAttr> vcols;
   KEY *key_info = &table->key_info[pos];
@@ -366,7 +373,7 @@ common::ErrorCode KVStore::create_keys_and_cf(TABLE *table, std::shared_ptr<RdbT
       throw common::Exception("column family not valid for storing index data. cf: " + DEFAULT_SYSTEM_CF_NAME);
 
     // isnot default cf, then get the cf name.
-    rocksdb::ColumnFamilyHandle *cf_handle = ha_kvstore_->GetCfHandle(cf_name);
+    rocksdb::ColumnFamilyHandle *cf_handle = GetCfHandle(cf_name);
 
     if (!cf_handle) {
       return common::ErrorCode::FAILED;
@@ -388,9 +395,10 @@ bool IndexCompactFilter::Filter([[maybe_unused]] int level, const rocksdb::Slice
   GlobalId gl_index_id;
   gl_index_id.cf_id = cf_id_;
   gl_index_id.index_id = be_to_uint32(reinterpret_cast<const uchar *>(key.data()));
+  KVStore *store = (reinterpret_cast<core::Engine *>(tianmu_hton->data))->getStore();
 
   if (gl_index_id.index_id != prev_index_.index_id) {
-    should_delete_ = ha_kvstore_->IndexDroping(gl_index_id);
+    should_delete_ = store->IndexDroping(gl_index_id);
     prev_index_ = gl_index_id;
   }
 

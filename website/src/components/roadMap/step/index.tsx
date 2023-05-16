@@ -4,9 +4,9 @@ import {IStep} from './interface';
 import {StepWrap, StepItemWrap, StepContext, ButtonWrap, ButtonIcon, Logo} from './styles';
 
 export const Step: React.FC<IStep> = ({dataSource, value}) => {
-  const [scroll, setScroll] = useState(0);
+  const [scroll, setScroll] = useState(960);
   const { ref, inView } = useInView({
-    threshold: 0,
+    threshold: 0.8,
   });
 
   const checkActive = (time: string) => {
@@ -29,12 +29,12 @@ export const Step: React.FC<IStep> = ({dataSource, value}) => {
   }
 
   const scrollNext = () => {
-    setScroll((scroll) => scroll += 300)
+    setScroll((scroll) => scroll += 320)
   }
  
   return (
     <StepWrap>
-      <StepContext scroll={scroll}>
+      <StepContext scroll={scroll} counts={dataSource?.length ?? 0}>
         <div className='wrap'>
         {
           dataSource.map(({title, desc, time, list}, index: number) => {

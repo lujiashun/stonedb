@@ -1,0 +1,96 @@
+-- source include/have_tianmu.inc
+
+use test;
+--disable_warnings
+drop table IF EXISTS tmp_table;
+--enable_warnings
+--echo # 
+--echo # tianmu_mandatory=OFF
+--echo # 
+--disable_warnings
+set tianmu_mandatory=OFF;
+--enable_warnings
+
+create table t_issue1131(c1 int,c2 varchar(255))engine=innodb;
+show create table t_issue1131;
+show variables like '%_engine';
+alter table t_issue1131 add c3 int;
+show create table t_issue1131;
+drop table t_issue1131;
+
+CREATE TEMPORARY TABLE tmp_table (
+ name VARCHAR(10) NOT NULL,
+ value INTEGER NOT NULL
+)engine=innodb;
+
+show create table tmp_table;
+drop table tmp_table;
+
+
+--echo # 
+--echo # tianmu_mandatory=ON
+--echo # 
+--disable_warnings
+set tianmu_mandatory=ON;
+--enable_warnings
+
+create table t_issue1131(c1 int,c2 varchar(255))engine=innodb;
+show create table t_issue1131;
+show variables like '%_engine';
+alter table t_issue1131 add c3 int;
+show create table t_issue1131;
+drop table t_issue1131;
+
+CREATE TEMPORARY TABLE tmp_table (
+ name VARCHAR(10) NOT NULL,
+ value INTEGER NOT NULL
+)engine=innodb;
+
+show create table tmp_table;
+drop table tmp_table;
+
+--echo # 
+--echo # tianmu_mandatory=ON
+--echo # set default_storage_engine=innodb;
+--disable_warnings
+set tianmu_mandatory=ON;
+--enable_warnings
+set default_storage_engine=innodb;
+
+create table t_issue1131(c1 int,c2 varchar(255));
+show create table t_issue1131;
+show variables like '%_engine';
+alter table t_issue1131 add c3 int;
+show create table t_issue1131;
+drop table t_issue1131;
+
+CREATE TEMPORARY TABLE tmp_table (
+ name VARCHAR(10) NOT NULL,
+ value INTEGER NOT NULL
+);
+
+show create table tmp_table;
+drop table tmp_table;
+
+--echo # 
+--echo # tianmu_mandatory=OFF
+--echo # 
+--echo [on slave]
+--disable_warnings
+set tianmu_mandatory=OFF;
+--enable_warnings
+
+create table t_issue1131(c1 int,c2 varchar(255));
+show create table t_issue1131;
+show variables like '%_engine';
+alter table t_issue1131 add c3 int;
+show create table t_issue1131;
+drop table t_issue1131;
+
+CREATE TEMPORARY TABLE tmp_table (
+ name VARCHAR(10) NOT NULL,
+ value INTEGER NOT NULL
+);
+
+show create table tmp_table;
+drop table tmp_table;

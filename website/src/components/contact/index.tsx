@@ -97,8 +97,9 @@ const Concat = () => {
               <Item>
                 <IconFont type="icon-a-bianzu27"  className='icon' />
                 <Translate id="home.social">
-                  关注公众号
+                  关注我们
                 </Translate>
+                <Image className='more' width={80} src="https://cms.stoneatom.com/assets/fc0d7dc6-3231-4fa4-b58e-d9facff2e7ef" />
                 <Image className='more' width={80} src="http://static.stoneatom.com/assets/rc-upload-1654065031076-2_qrcode_for_gh_8fb79cdb61cd_344.jpg" />
               </Item>
               <Divider />

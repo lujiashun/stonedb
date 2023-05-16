@@ -80,10 +80,10 @@ class KVStore final {
 
   // kv memory table meta operation
   // as KVWriteTableMeta does, but not to on-disk but in-mem
-  std::shared_ptr<core::TianmuMemTable> FindMemTable(std::string &name) { return ddl_manager_.find_mem(name); }
-  common::ErrorCode KVWriteMemTableMeta(std::shared_ptr<core::TianmuMemTable> tb_mem);
-  common::ErrorCode KVDelMemTableMeta(std::string table_name);
-  common::ErrorCode KVRenameMemTableMeta(std::string s_name, std::string d_name);
+  std::shared_ptr<core::DeltaTable> FindDeltaTable(std::string &name) { return ddl_manager_.find_delta(name); }
+  common::ErrorCode KVWriteDeltaMeta(std::shared_ptr<core::DeltaTable> delta);
+  common::ErrorCode KVDelDeltaMeta(std::string table_name);
+  common::ErrorCode KVRenameDeltaMeta(std::string s_name, std::string d_name);
 
   // kv data operation
   bool KVDeleteKey(rocksdb::WriteOptions &wopts, rocksdb::ColumnFamilyHandle *cf, rocksdb::Slice &key);
@@ -97,14 +97,14 @@ class KVStore final {
   // release the specific snapshot
   void ReleaseRdbSnapshot(const rocksdb::Snapshot *snapshot) { txn_db_->ReleaseSnapshot(snapshot); }
   // gets the column family name by table handler.
-  static std::string generate_cf_name(uint index, TABLE *table);
+  std::string generate_cf_name(uint index, TABLE *table);
   // creates a ith key of rocksdb table.
-  static void create_rdbkey(TABLE *table, uint pos, std::shared_ptr<RdbKey> &new_key_def,
-                            rocksdb::ColumnFamilyHandle *cf_handle);
+  void create_rdbkey(TABLE *table, uint pos, std::shared_ptr<RdbKey> &new_key_def,
+                     rocksdb::ColumnFamilyHandle *cf_handle);
   // create keys and column family for a rocksdb table.
-  static common::ErrorCode create_keys_and_cf(TABLE *table, std::shared_ptr<RdbTable> rdb_tbl);
+  common::ErrorCode create_keys_and_cf(TABLE *table, std::shared_ptr<RdbTable> rdb_tbl);
   // Returns index of primary key
-  static uint pk_index(const TABLE *const table, std::shared_ptr<RdbTable> tbl_def);
+  uint pk_index(const TABLE *const table, std::shared_ptr<RdbTable> tbl_def);
 
  private:
   // initializationed?

@@ -32,6 +32,7 @@
 #include "core/table_share.h"
 #include "core/temp_table.h"
 #include "core/tianmu_table.h"
+#include "executor/combined_iterator.h"
 #include "exporter/data_exporter.h"
 #include "exporter/export2file.h"
 #include "index/tianmu_table_index.h"
@@ -69,7 +70,8 @@ class TableShare;
 class Transaction;
 class RSIndex;
 class TaskExecutor;
-class TianmuMemTable;
+class DeltaTable;
+class DeltaIterator;
 
 class Engine final {
  public:
@@ -77,10 +79,12 @@ class Engine final {
   ~Engine();
 
   int Init(uint engine_slot);
-  void CreateTable(const std::string &table, TABLE *from);
-  void DeleteTable(const char *table, THD *thd);
+  index::KVStore *getStore() const { return store_; }
+
+  void CreateTable(const std::string &table, TABLE *from, HA_CREATE_INFO *create_info);
+  int DeleteTable(const char *table, THD *thd);
   void TruncateTable(const std::string &table_path, THD *thd);
-  void RenameTable(Transaction *trans_, const std::string &from, const std::string &to, THD *thd);
+  int RenameTable(Transaction *trans_, const std::string &from, const std::string &to, THD *thd);
   void PrepareAlterTable(const std::string &table_path, std::vector<Field *> &new_cols, std::vector<Field *> &old_cols,
                          THD *thd);
 
@@ -100,9 +104,6 @@ class Engine final {
   std::vector<AttrInfo> GetTableAttributesInfo(const std::string &table_path, TABLE_SHARE *table_share);
   void UpdateAndStoreColumnComment(TABLE *table, int field_id, Field *source_field, int source_field_id,
                                    CHARSET_INFO *cs);
-  void GetTableIterator(const std::string &table_path, TianmuTable::Iterator &iter_begin,
-                        TianmuTable::Iterator &iter_end, std::shared_ptr<TianmuTable> &table, const std::vector<bool> &,
-                        THD *thd);
   common::TianmuError RunLoader(THD *thd, sql_exchange *ex, TABLE_LIST *table_list, void *arg);
   void CommitTx(THD *thd, bool all);
   void Rollback(THD *thd, bool all, bool force_error_message = false);
@@ -110,33 +111,41 @@ class Engine final {
   Transaction *GetTx(THD *thd);
   void ClearTx(THD *thd);
   QueryRouteTo HandleSelect(THD *thd, LEX *lex, Query_result *&result_output, ulong setup_tables_done_option, int &res,
-                            int &optimize_after_tianmu, int &tianmu_free_join, int with_insert = false);
+                            int &is_optimize_after_tianmu, int &tianmu_free_join, int with_insert = false);
   system::ResourceManager *getResourceManager() const { return m_resourceManager; }
   std::shared_ptr<TianmuTable> GetTableRD(const std::string &table_path);
   int InsertRow(const std::string &tablename, Transaction *trans_, TABLE *table, std::shared_ptr<TableShare> &share);
-  void InsertDelayed(const std::string &table_path, int table_id, TABLE *table);
-  void InsertMemRow(const std::string &table_path, std::shared_ptr<TableShare> &share, TABLE *table);
+  int UpdateRow(const std::string &tablename, TABLE *table, std::shared_ptr<TableShare> &share, uint64_t row_id,
+                const uchar *old_data, uchar *new_data);
+  int DeleteRow(const std::string &tablename, TABLE *table, std::shared_ptr<TableShare> &share, uint64_t row_id);
+  void InsertDelayed(const std::string &table_path, TABLE *table);
+  int InsertToDelta(const std::string &table_path, std::shared_ptr<TableShare> &share, TABLE *table);
+  void UpdateToDelta(const std::string &table_path, std::shared_ptr<TableShare> &share, TABLE *table, uint64_t row_id,
+                     const uchar *old_data, uchar *new_data);
+  void DeleteToDelta(std::shared_ptr<TableShare> &share, TABLE *table, uint64_t row_id);
   std::string DelayedBufferStat() { return insert_buffer.Status(); }
-  std::string RowStoreStat();
+  std::string DeltaStoreStat();
   void UnRegisterTable(const std::string &table_path);
   std::shared_ptr<TableShare> GetTableShare(const TABLE_SHARE *table_share);
   common::TX_ID MinXID() const { return min_xid; }
   common::TX_ID MaxXID() const { return max_xid; }
   void DeferRemove(const fs::path &file, int32_t cookie);
   void HandleDeferredJobs();
-  // support for primary key
+  // add primary key
   void AddTableIndex(const std::string &table_path, TABLE *table, THD *thd);
+  // delete primary key
+  bool DeleteTableIndex(const std::string &table_path, THD *thd);
   std::shared_ptr<index::TianmuTableIndex> GetTableIndex(const std::string &table_path);
   bool has_pk(TABLE *table) const { return table->s->primary_key != MAX_INDEXES; }
   void RenameRdbTable(const std::string &from, const std::string &to);
   void DropSignal() { cv_drop_.notify_one(); }
   void ResetTaskExecutor(int percent);
   TaskExecutor *GetTaskExecutor() const { return task_executor.get(); }
-  void AddMemTable(TABLE *form, std::shared_ptr<TableShare> share);
-  void UnregisterMemTable(const std::string &from, const std::string &to);
+  void AddTableDelta(TABLE *form, std::shared_ptr<TableShare> share);
+  void UnregisterDeltaTable(const std::string &from, const std::string &to);
 
  public:
-  utils::thread_pool delay_insert_thread_pool;
+  utils::thread_pool bg_load_thread_pool;
   utils::thread_pool load_thread_pool;
   utils::thread_pool query_thread_pool;
   utils::thread_pool delete_or_update_thread_pool;
@@ -149,11 +158,16 @@ class Engine final {
   static AttributeTypeInfo GetAttrTypeInfo(const Field &field);
   static common::ColumnType GetCorrespondingType(const enum_field_types &eft);
   static bool IsTianmuTable(TABLE *table);
-  static bool ConvertToField(Field *field, types::TianmuDataType &rcitem, std::vector<uchar> *blob_buf);
-  static int Convert(int &is_null, my_decimal *value, types::TianmuDataType &rcitem, int output_scale = -1);
-  static int Convert(int &is_null, int64_t &value, types::TianmuDataType &rcitem, enum_field_types f_type);
-  static int Convert(int &is_null, double &value, types::TianmuDataType &rcitem);
-  static int Convert(int &is_null, String *value, types::TianmuDataType &rcitem, enum_field_types f_type);
+  static bool ConvertToField(Field *field, types::TianmuDataType &tianmu_item, std::vector<uchar> *blob_buf);
+  static int Convert(int &is_null, my_decimal *value, types::TianmuDataType &tianmu_item, int output_scale = -1);
+  // Add args unsigned_flag here is much more easier to construct TianmuNum in Convert function, another way is
+  // add unsigned_flag in TianmuNum, it's more complex.
+  static int Convert(int &is_null, int64_t &value, types::TianmuDataType &tianmu_item, enum_field_types f_type,
+                     bool unsigned_flag);
+  static int Convert(int &is_null, double &value, types::TianmuDataType &tianmu_item);
+  static int Convert(int &is_null, String *value, types::TianmuDataType &tianmu_item, enum_field_types f_type);
+  static bool DecodeInsertRecordToField(const char *ptr, Field **fields);
+  static void DecodeUpdateRecordToField(const char *ptr, Field **fields);
   static void ComputeTimeZoneDiffInMinutes(THD *thd, short &sign, short &minutes);
   static std::string GetTablePath(TABLE *table);
   static common::TianmuError GetIOP(std::unique_ptr<system::IOParameters> &io_params, THD &thd, sql_exchange &ex,
@@ -161,33 +175,45 @@ class Engine final {
   static common::TianmuError GetRejectFileIOParameters(THD &thd, std::unique_ptr<system::IOParameters> &io_params);
   static fs::path GetNextDataDir();
 
+  static const char *StrToFiled(const char *ptr, Field *field, DeltaRecordHead *deltaRecord, int col_num);
+  static char *FiledToStr(char *ptr, Field *field, DeltaRecordHead *deltaRecord, int col_num, THD *thd);
+
  private:
   void AddTx(Transaction *tx);
   void RemoveTx(Transaction *tx);
   QueryRouteTo Execute(THD *thd, LEX *lex, Query_result *result_output, SELECT_LEX_UNIT *unit_for_union = nullptr);
   int SetUpCacheFolder(const std::string &cachefolder_path);
 
-  static bool AreConvertible(types::TianmuDataType &rcitem, enum_field_types my_type, uint length = 0);
+  static bool AreConvertible(types::TianmuDataType &tianmu_item, enum_field_types my_type, uint length = 0);
   static bool IsTIANMURoute(THD *thd, TABLE_LIST *table_list, SELECT_LEX *selects_list,
                             int &in_case_of_failure_can_go_to_mysql, int with_insert);
   static const char *GetFilename(SELECT_LEX *selects_list, int &is_dumpfile);
   static std::unique_ptr<system::IOParameters> CreateIOParameters(const std::string &path, void *arg);
   static std::unique_ptr<system::IOParameters> CreateIOParameters(THD *thd, TABLE *table, void *arg);
   void LogStat();
-  std::shared_ptr<TableOption> GetTableOption(const std::string &table, TABLE *form);
+  std::shared_ptr<TableOption> GetTableOption(const std::string &table, TABLE *form, HA_CREATE_INFO *create_info);
   std::shared_ptr<TableShare> getTableShare(const std::string &table_path);
-  void ProcessDelayedInsert();
-  void ProcessDelayedMerge();
   std::unique_ptr<char[]> GetRecord(size_t &len);
-  void EncodeRecord(const std::string &table_path, int table_id, Field **field, size_t col, size_t blobs,
-                    std::unique_ptr<char[]> &buf, uint32_t &size);
+
+  static void EncodeInsertRecord(const std::string &table_path, Field **field, size_t col, size_t blobs,
+                                 std::unique_ptr<char[]> &buf, uint32_t &size, THD *thd);
+  static void EncodeUpdateRecord(const std::string &table_path, std::unordered_map<uint, Field *> update_fields,
+                                 size_t field_count, size_t blobs, std::unique_ptr<char[]> &buf, uint32_t &buf_size,
+                                 THD *thd);
+  static void EncodeDeleteRecord(std::unique_ptr<char[]> &buf, uint32_t &buf_size);
+  void ProcessInsertBufferMerge();
+  void ProcessDeltaStoreMerge();
 
  private:
   struct TianmuStat {
     unsigned long loaded;
     unsigned long load_cnt;
-    unsigned long delayinsert;
-    unsigned long failed_delayinsert;
+    unsigned long delta_insert;
+    unsigned long failed_delta_insert;
+    unsigned long delta_update;
+    unsigned long failed_delta_update;
+    unsigned long delta_delete;
+    unsigned long failed_delta_delete;
     unsigned long select;
     unsigned long loaded_dup;
     unsigned long update;
@@ -249,13 +275,16 @@ class Engine final {
   unsigned long UT = 0;    // Update total
 
   std::unordered_map<std::string, std::shared_ptr<index::TianmuTableIndex>> m_table_keys;
-  std::unordered_map<std::string, std::shared_ptr<TianmuMemTable>> mem_table_map;
+  std::unordered_map<std::string, std::shared_ptr<DeltaTable>> m_table_deltas;
   std::shared_mutex tables_keys_mutex;
   std::shared_mutex mem_table_mutex;
   std::thread m_drop_idx_thread;
   std::condition_variable cv_drop_;
   std::mutex cv_drop_mtx_;
   std::unique_ptr<TaskExecutor> task_executor;
+  uint64_t m_mem_available_ = 0;
+  uint64_t m_swap_used_ = 0;
+  index::KVStore *store_;
 };
 
 class ResultSender {
@@ -265,7 +294,7 @@ class ResultSender {
 
   void Send(TempTable *t);
   void Send(TempTable::RecordIterator &iter);
-  void SendRow(const std::vector<std::unique_ptr<types::TianmuDataType>> &record, TempTable *owner);
+  void SendRow(std::vector<std::unique_ptr<types::TianmuDataType>> &record, TempTable *owner);
 
   void SetLimits(int64_t *_offset, int64_t *_limit) {
     offset = _offset;
@@ -278,12 +307,14 @@ class ResultSender {
   void Finalize(TempTable *result);
   int64_t SentRows() const { return rows_sent; }
 
+ public:
+  List<Item> &fields;
+
  protected:
   THD *thd;
   Query_result *res;
   std::map<int, Item *> items_backup;
   uint *buf_lens;
-  List<Item> &fields;
   bool is_initialized;
   int64_t *offset;
   int64_t *limit;
@@ -291,7 +322,7 @@ class ResultSender {
   int64_t affect_rows;
 
   virtual void Init(TempTable *t);
-  virtual void SendRecord(const std::vector<std::unique_ptr<types::TianmuDataType>> &record);
+  virtual void SendRecord(std::vector<std::unique_ptr<types::TianmuDataType>> &record);
 };
 
 class ResultExportSender final : public ResultSender {
@@ -303,14 +334,15 @@ class ResultExportSender final : public ResultSender {
 
  protected:
   void Init(TempTable *t) override;
-  void SendRecord(const std::vector<std::unique_ptr<types::TianmuDataType>> &record) override;
+  void SendRecord(std::vector<std::unique_ptr<types::TianmuDataType>> &record) override;
 
-  exporter::select_tianmu_export *export_res;
-  std::unique_ptr<exporter::DataExporter> rcde;
-  std::shared_ptr<system::LargeBuffer> rcbuffer;
+  exporter::select_tianmu_export *export_res_;
+  std::unique_ptr<exporter::DataExporter> tianmu_data_exp_;
+  std::shared_ptr<system::LargeBuffer> tiammu_buffer_;
 };
 
-enum class tianmu_var_name {
+enum class tianmu_param_name {
+  TIANMU_TIMEOUT = 0,
   TIANMU_DATAFORMAT,
   TIANMU_PIPEMODE,
   TIANMU_NULL,
@@ -329,18 +361,18 @@ static std::string tianmu_var_name_strings[] = {"TIANMU_LOAD_TIMEOUT",        "T
                                                 "TIANMU_LOAD_PARALLEL_AGGR",  "TIANMU_LOAD_REJECT_FILE",
                                                 "TIANMU_LOAD_ABORT_ON_COUNT", "TIANMU_LOAD_ABORT_ON_THRESHOLD"};
 
-std::string get_parameter_name(enum tianmu_var_name vn);
+std::string get_parameter_name(enum tianmu_param_name vn);
 
-int get_parameter(THD *thd, enum tianmu_var_name vn, longlong &result, std::string &s_result);
+int get_parameter(THD *thd, enum tianmu_param_name vn, longlong &result, std::string &s_result);
 
 // return 0 on success
 // 1 if parameter was not specified
 // 2 if was specified but with wrong type
-int get_parameter(THD *thd, enum tianmu_var_name vn, double &value);
-int get_parameter(THD *thd, enum tianmu_var_name vn, int64_t &value);
-int get_parameter(THD *thd, enum tianmu_var_name vn, std::string &value);
+int get_parameter(THD *thd, enum tianmu_param_name vn, double &value);
+int get_parameter(THD *thd, enum tianmu_param_name vn, int64_t &value);
+int get_parameter(THD *thd, enum tianmu_param_name vn, std::string &value);
 
-bool parameter_equals(THD *thd, enum tianmu_var_name vn, longlong value);
+bool parameter_equals(THD *thd, enum tianmu_param_name vn, longlong value);
 
 /** The maximum length of an encode table name in bytes.  The max
 +table and database names are NAME_CHAR_LEN (64) characters. After the

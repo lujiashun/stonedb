@@ -16,9 +16,9 @@
 */
 
 #include "expr_column.h"
-#include "core/compiled_query.h"
 #include "core/mysql_expression.h"
-#include "core/tianmu_attr.h"
+#include "optimizer/compile/compiled_query.h"
+#include "vc/tianmu_attr.h"
 
 namespace Tianmu {
 namespace vcolumn {
@@ -111,6 +111,14 @@ bool ExpressionColumn::FeedArguments(const core::MIIterator &mit) {
       for (auto &val_it : cache->second) *(val_it.second) = val_it.first = v;
   }
   first_eval_ = false;
+
+  {
+    Item *item = expr_->GetItem();
+    if (item && (Item::FUNC_ITEM == item->type()) && (dynamic_cast<Item_func_if *>(item))) {
+      return true;
+    }
+  }
+
   return (diff || !deterministic_);
 }
 
@@ -123,6 +131,13 @@ int64_t ExpressionColumn::GetValueInt64Impl(const core::MIIterator &mit) {
 }
 
 bool ExpressionColumn::IsNullImpl(const core::MIIterator &mit) {
+  {
+    Item *item = expr_->GetItem();
+    if (item && (Item::FUNC_ITEM == item->type()) && (dynamic_cast<Item_func_if *>(item))) {
+      return false;
+    }
+  }
+
   if (FeedArguments(mit))
     last_val_ = expr_->Evaluate();
   return last_val_->IsNull();
@@ -181,7 +196,7 @@ types::TianmuValueObject ExpressionColumn::GetValueImpl(const core::MIIterator &
     return types::TianmuDateTime(GetValueInt64(mit), TypeName());
   if (core::ATI::IsRealType(TypeName()))
     return types::TianmuNum(GetValueInt64(mit), 0, true, TypeName());
-  if (lookup_to_num || TypeName() == common::ColumnType::NUM)
+  if (lookup_to_num || TypeName() == common::ColumnType::NUM || TypeName() == common::ColumnType::BIT)
     return types::TianmuNum(GetValueInt64(mit), Type().GetScale());
   DEBUG_ASSERT(!"Illegal execution path");
   return types::TianmuValueObject();
@@ -269,7 +284,7 @@ bool ExpressionColumn::ExactlyOneLookup() {
   if (!deterministic_)
     return false;
   auto iter = var_map_.begin();
-  if (iter == var_map_.end() || !iter->GetTabPtr()->GetColumnType(iter->col_ndx).IsLookup())
+  if (iter == var_map_.end() || !iter->GetTabPtr()->GetColumnType(iter->col_ndx).Lookup())
     return false;  // not a lookup
   iter++;
   if (iter != var_map_.end())  // more than one column

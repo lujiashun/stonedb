@@ -44,150 +44,31 @@
   Currently, only Tianmu Engine uses this function.
 */
 
-
-/**
-  Prints a quoted string to io cache.
-  Control characters are displayed as hex sequence, e.g. \x00
-  
-  @param[in] file              IO cache
-  @param[in] prt               Pointer to string
-  @param[in] length            String length
-*/
-
-static void
-my_b_write_quoted(IO_CACHE *file, const uchar *ptr, uint length)
-{
-  const uchar *s;
-  my_b_printf(file, "'");
-  for (s= ptr; length > 0 ; s++, length--)
-  {
-    if (*s > 0x1F && *s != '\'' && *s != '\\')
-      my_b_write(file, s, 1);
-    else
-    {
-      uchar hex[10];
-      size_t len= my_snprintf((char*) hex, sizeof(hex), "%s%02x", "\\x", *s);
-      my_b_write(file, hex, len);
-    }
-  }
-  my_b_printf(file, "'");
-}
-
-/**
-  Prints a bit string to io cache in format  b'1010'.
-  
-  @param[in] file              IO cache
-  @param[in] ptr               Pointer to string
-  @param[in] nbits             Number of bits
-*/
-static void
-my_b_write_bit(char *file, const uchar *ptr, uint nbits)
-{
-  uint bitnum, nbits8= ((nbits + 7) / 8) * 8, skip_bits= nbits8 - nbits;
-  strncpy(file , "b'" , 2);
-  file += 2;
-  for (bitnum= skip_bits ; bitnum < nbits8; bitnum++)
-  {
-    int is_set= (ptr[(bitnum) / 8] >> (7 - bitnum % 8))  & 0x01;
-    char *c = (char*) (is_set ? "1" : "0");
-    strncpy(file , c ,1);
-    file ++;
-  }
-  strncpy(file , "'" ,1);
-}
-
-
-/**
-  Prints a packed string to io cache.
-  The string consists of length packed to 1 or 2 bytes,
-  followed by string data itself.
-  
-  @param[in] file              IO cache
-  @param[in] ptr               Pointer to string
-  @param[in] length            String size
-  
-  @retval   - number of bytes scanned.
-*/
-static size_t
-my_b_write_quoted_with_length(IO_CACHE *file, const uchar *ptr, uint length)
-{
-  if (length < 256)
-  {
-    length= *ptr;
-    my_b_write_quoted(file, ptr + 1, length);
-    return length + 1;
-  }
-  else
-  {
-    length= uint2korr(ptr);
-    my_b_write_quoted(file, ptr + 2, length);
-    return length + 2;
-  }
-}
-
-
-/**
-  Prints a 32-bit number in both signed and unsigned representation
-  
-  @param[in] file              IO cache
-  @param[in] sl                Signed number
-  @param[in] ul                Unsigned number
-*/
-static void
-my_b_write_sint32_and_uint32(IO_CACHE *file, int32 si, uint32 ui)
-{
-  my_b_printf(file, "%d", si);
-  if (si < 0)
-    my_b_printf(file, " (%u)", ui);
-}
-
-static double PowOfTen(int exponent) { return std::pow((double)10, exponent); }
-
 /**
  Conversion conditions of column data
   
-  @param[in] file              IO cache
-  @param[in] ptr               Pointer to string
-  @param[in] type              Column type
-  @param[in] meta              Column meta information
+  @param[std::string] str_condition       condition cache
+  @param[Field *] f                       Column Properties
+  @param[bool] unwanted_str               Whether string condition is required
   
   @retval   - number of bytes scanned from ptr.
 */
 static size_t
-filed_str_to_sql_conditions(std::string &str_condition, const uchar *ptr,
-                            uint type, uint meta, Field *f)
+field_str_to_sql_conditions(std::string &str_condition, Field *f, bool unwanted_str)
 {
-  uint32 length= 0;
-  uint32 ASC_max = 255;
-  if (type == MYSQL_TYPE_STRING)
-  {
-    if (meta > ASC_max)
-    {
-      uint byte0= meta >> 8;
-      uint byte1= meta & 0xFF;
-      
-      if ((byte0 & 0x30) != 0x30)
-      {
-        /* a long CHAR() field: see #37426 */
-        length= byte1 | (((byte0 & 0x30) ^ 0x30) << 4);
-      }
-      else
-        length = meta & 0xFF;
-    }
-    else
-      length= meta;
+  const uchar *ptr = f->is_null() ? nullptr:f->ptr;
+  if(!ptr){
+    return 0;
   }
 
-  switch (type) {
+  switch (f->type()) {
   case MYSQL_TYPE_LONG:
   case MYSQL_TYPE_TINY:
   case MYSQL_TYPE_INT24:
   case MYSQL_TYPE_SHORT:
   case MYSQL_TYPE_LONGLONG:
+  case MYSQL_TYPE_BIT:
     {
-      if(!ptr){
-        return 0;
-      }
       int64_t v = f->val_int();
       str_condition = std::to_string(v);
       return 4;
@@ -196,34 +77,15 @@ filed_str_to_sql_conditions(std::string &str_condition, const uchar *ptr,
   //case MYSQL_TYPE_FLOAT:
   case MYSQL_TYPE_DOUBLE:
     {
-      if(!ptr){
-        return 0;
-      }
       double v = f->val_real();
       str_condition = std::to_string(v);
       return 4;
-    }
-  case MYSQL_TYPE_BIT:
-    {
-      /* Meta-data: bit_len, bytes_in_rec, 2 bytes */
-      uint nbits= ((meta >> 8) * 8) + (meta & 0xFF);
-      if(!ptr){
-        return 0;
-      }
-      length= (nbits + 7) / 8;
-      char tmp[120] = {0};
-      my_b_write_bit(tmp, ptr, nbits);
-      str_condition = tmp;
-      return length;
     }
   case MYSQL_TYPE_TIMESTAMP:
   case MYSQL_TYPE_TIMESTAMP2:
   case MYSQL_TYPE_DATETIME:
   case MYSQL_TYPE_DATETIME2:
   {
-      if(!ptr){
-        return 0;
-      }
       MYSQL_TIME my_time;
       std::memset(&my_time, 0, sizeof(my_time));
       f->get_time(&my_time);
@@ -237,9 +99,6 @@ filed_str_to_sql_conditions(std::string &str_condition, const uchar *ptr,
   case MYSQL_TYPE_TIME:
   case MYSQL_TYPE_TIME2:
     {
-      if(!ptr){
-        return 0;
-      }
       MYSQL_TIME my_time;
       std::memset(&my_time, 0, sizeof(my_time));
       f->get_time(&my_time);
@@ -252,9 +111,6 @@ filed_str_to_sql_conditions(std::string &str_condition, const uchar *ptr,
   case MYSQL_TYPE_DATE:
   case MYSQL_TYPE_NEWDATE:
     {
-      if(!ptr){
-        return 0;
-      }
       MYSQL_TIME my_time;
       std::memset(&my_time, 0, sizeof(my_time));
       f->get_time(&my_time);
@@ -266,9 +122,6 @@ filed_str_to_sql_conditions(std::string &str_condition, const uchar *ptr,
 
   case MYSQL_TYPE_YEAR:
     {
-      if(!ptr){
-        return 0;
-      }
       MYSQL_TIME my_time;
       std::memset(&my_time, 0, sizeof(my_time));
       f->get_time(&my_time);
@@ -277,51 +130,12 @@ filed_str_to_sql_conditions(std::string &str_condition, const uchar *ptr,
       str_condition = tmp;
       return 1;
     }
-  
-  case MYSQL_TYPE_ENUM:
-    switch (meta & 0xFF) {
-    case 1:
-    {
-      if(!ptr){
-        return 0;
-      }
-      int64_t v = f->val_int();
-      str_condition = std::to_string(v);
-      return 1;
-    }
-    case 2:
-    {
-      if(!ptr){
-        return 0;
-      }
-      int32 i32= uint2korr(ptr);
-      char tmp[64] = {0};
-      sprintf(tmp, "%d", i32);
-      str_condition = tmp;
-      return 2;
-    }
-    default:
-      return 0;
-    }
-    break;
-    
-  case MYSQL_TYPE_SET:
-  {
-    if(!ptr){
-        return 0;
-      }
-    char tmp[64] = {0};
-    my_b_write_bit(tmp, ptr , (meta & 0xFF) * 8);
-    str_condition = tmp;
-    return meta & 0xFF;
-  }
   case MYSQL_TYPE_BLOB:
   case MYSQL_TYPE_VARCHAR:
   case MYSQL_TYPE_VAR_STRING:
   case MYSQL_TYPE_STRING:
-  case MYSQL_TYPE_JSON:
   {
-    if(!ptr){
+    if(unwanted_str){
         return 0;
       }
     String str;
@@ -330,42 +144,108 @@ filed_str_to_sql_conditions(std::string &str_condition, const uchar *ptr,
     str_condition = "'" + str1 + "'";
     return 4;
   }
+  //The tianmu engine does not support the following types. If it does, please adapt the type.
+  case MYSQL_TYPE_JSON:
+  case MYSQL_TYPE_SET:
+  case MYSQL_TYPE_ENUM:
+  case MYSQL_TYPE_GEOMETRY:
+  case MYSQL_TYPE_NULL:
   default:
     break;
   }
   return 0;
 }
 
+//Check whether there are numbers or time types in the table
+static bool checklist_have_number_or_time(Field **field, uint field_num)
+{
+  if(!field) return false;
+  for (uint col_id = 0; col_id < field_num; col_id++) {
+    Field *f = field[col_id];
+    switch (f->type()) {
+      case MYSQL_TYPE_LONG:
+      case MYSQL_TYPE_TINY:
+      case MYSQL_TYPE_INT24:
+      case MYSQL_TYPE_SHORT:
+      case MYSQL_TYPE_LONGLONG:
+      case MYSQL_TYPE_DOUBLE:
+      case MYSQL_TYPE_TIMESTAMP:
+      case MYSQL_TYPE_TIMESTAMP2:
+      case MYSQL_TYPE_DATETIME:
+      case MYSQL_TYPE_DATETIME2:
+      case MYSQL_TYPE_YEAR:
+      case MYSQL_TYPE_DATE:
+      case MYSQL_TYPE_NEWDATE:
+      case MYSQL_TYPE_TIME:
+      case MYSQL_TYPE_TIME2:
+      {
+        return true;
+      }
+      default:
+        break;
+    }
+  }
+  return false;
+}
 
-bool Rows_log_event::column_information_to_conditions(std::string &sql_statemens, 
-                                                      MY_BITMAP *cols_bitmap, 
+
+bool Rows_log_event::column_information_to_conditions(std::string &sql_statemens,
                                                       std::string &prefix)
 {
-  /*
-    Skip metadata bytes which gives the information about nullabity of master
-    columns. Master writes one bit for each affected column.
-   */
-  bitmap_bits_set(cols_bitmap);
   sql_statemens += prefix;
   Field **field = m_table->field;
-  MYSQL_TIME my_time;
-  std::memset(&my_time, 0, sizeof(my_time));
+  if(!field) return false;
+  /*
+    If there is a unique constraint,
+    use the field of the unique constraint as the push down condition
+  */
+  std::string key_field_name;
+  if(m_table->s &&
+    m_table->s->key_parts > 0 &&
+    m_table->s->key_info &&
+    m_table->s->key_info->key_part &&
+    m_table->s->key_info->key_part->field){
+        key_field_name = m_table->s->key_info->key_part->field->field_name;
+    }
   int cond_num = 0;
+  bool unwanted_str = false;
+  /*
+    If there is a number or time type in the table,
+    the string type value is not used as the push down condition.
+  */
+  if(checklist_have_number_or_time(field, m_table->s->fields)) unwanted_str = true;
+
   for (uint col_id = 0; col_id < m_table->s->fields; col_id++) {
     Field *f = field[col_id];
-    if (bitmap_is_set(cols_bitmap, col_id) == 0)
-      continue;
     uint16 meta;
     f->save_field_metadata((uchar*)&meta);
     std::string str_cond;
-    size_t size = filed_str_to_sql_conditions(str_cond, (f->is_null() ? NULL: f->ptr), f->type(), meta, f);
-    if(str_cond.empty())
-    {
+
+    if(!key_field_name.empty()) {
+
+      if(key_field_name.compare(f->field_name) != 0) {
+        continue;
+      }
+
+      field_str_to_sql_conditions(str_cond, f, false);
+      if(str_cond.empty()) {
+        col_id = 0;
+        key_field_name = "";
+        continue;
+      }
+
+      sql_statemens += "`" + std::string(f->field_name) + "`=" + str_cond;
+      sql_statemens.push_back('\0');
+      return true;
+    }
+
+    field_str_to_sql_conditions(str_cond, f, unwanted_str);
+    if(str_cond.empty()){
       continue;
     }
     if(cond_num > 0 )
       sql_statemens += " and ";
-    sql_statemens += std::string(f->field_name) + "=" + str_cond;
+    sql_statemens += "`" + std::string(f->field_name) + "`=" + str_cond;
     cond_num ++;
   }
   sql_statemens.push_back('\0');
@@ -384,17 +264,17 @@ bool Rows_log_event::row_event_to_statement(LEX_CSTRING &lex_str, std::string &s
     regardless of the SQL type,
     The syntax of select is simple, so select statements are used here to compile conditions
   */
-  std::string sql_command = "SELECT * FROM ", sql_clause = " WHERE ";
+  std::string sql_command = "SELECT * FROM `", sql_clause = " WHERE ";
 
-  sql_statement = sql_command + m_table->s->db.str + "." + m_table->s->table_name.str;
-  if (!column_information_to_conditions(sql_statement, &m_cols, sql_clause))
+  sql_statement = sql_command + m_table->s->db.str + "`.`" + m_table->s->table_name.str +"`";
+  if (!column_information_to_conditions(sql_statement, sql_clause))
     return false;
   lex_str.str = sql_statement.c_str();
   lex_str.length = sql_statement.length();
   return true;
 }
 
-bool Rows_log_event::can_push_donw()
+bool Rows_log_event::can_push_down()
 {
   //Judge whether it is a tianmu engine
   if(!(m_table && m_table->s && 
@@ -421,6 +301,10 @@ bool Rows_log_event::can_push_donw()
     goto error;
   thd->set_query(lex_str);
   thd->set_query_id(next_query_id());
+  DBUG_EXECUTE_IF("tianmu_can_push_down_falied",
+    {
+      goto error;
+    });
 
   //Parse statement
   if (parser_state.init(thd, thd->query().str, thd->query().length))
@@ -484,7 +368,7 @@ bool Rows_log_event::can_push_donw()
 end:
   return true; 
 error:
-  sql_print_information("can_push_donw : error");
+  sql_print_information("can_push_down : falied");
   sql_print_information(lex_str.str);
   return false;
 }
